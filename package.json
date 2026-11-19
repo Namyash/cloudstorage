@@ -1,0 +1,7 @@
+{
+  "name": "family-drive",
+  "private": true,
+  "scripts": {
+    "dev": "python -B start.py"
+  }
+}

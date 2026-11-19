@@ -1,0 +1,41 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="theme-color" content="#162b24">
+  <title>Storage explorer · Family Drive</title>
+  <link rel="stylesheet" href="/assets/styles.css">
+  <link rel="stylesheet" href="/assets/storage.css">
+  <script type="module" src="/assets/storage.js"></script>
+</head>
+<body>
+  <header class="explorer-header"><div class="explorer-width"><div class="explorer-brand"><span class="brand-icon" aria-hidden="true"><svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7"><rect x="3" y="4" width="18" height="16" rx="4"/><path d="M3 14h18M7 17h1m3 0h1"/></svg></span><span>Family<span class="brand-accent">Drive</span></span></div><a class="button explorer-home" href="/" id="home" hidden>Open Family Drive</a></div></header>
+  <main class="explorer-width explorer-main">
+    <div class="page-title"><div><h1>Storage explorer</h1><p>See the drives Windows detects and browse your local data drives.</p></div><div class="page-actions"><button class="button secondary" id="refresh">Refresh drives</button><button class="button primary" id="move-open" hidden>Change storage location</button></div></div>
+    <section class="connection" id="connection" role="status">Checking for drives…</section>
+    <section class="connection" id="move-result" role="status" hidden></section>
+    <section class="panel discovery-panel" id="move-progress" hidden><h2>Moving household storage</h2><p id="move-detail"></p><progress id="move-meter" max="100" aria-label="Storage move progress"></progress></section>
+    <div class="explorer-grid" id="inventory" hidden>
+      <section class="panel discovery-panel"><h2>Drive letters</h2><p>Volumes Windows has assigned a letter.</p><div id="volumes"></div><label class="checkbox system-option" id="system-option" hidden><input id="system-drive" type="checkbox"><span>Include the Windows system drive</span></label></section>
+      <section class="panel discovery-panel"><h2>Physical disks</h2><p>Hardware detected by Windows, including disks without a drive letter.</p><div id="disks"></div></section>
+    </div>
+    <section class="panel discovery-panel unlock-panel" id="unlock-panel" hidden>
+      <h2>Unlock storage setup</h2><p>Enter the setup code printed in the terminal running Family Drive.</p>
+      <form id="unlock" class="explorer-form"><label>Setup code<input type="password" name="code" maxlength="64" autocomplete="off" required></label><button class="button primary" type="submit">Unlock</button></form>
+    </section>
+    <section class="panel browsing-panel" id="browse" hidden>
+      <div class="browse-head"><div><h2>Browse drive</h2><p id="browse-path"></p></div><button class="button secondary" id="parent" type="button">Up one level</button></div>
+      <p class="browse-message" id="browse-message" hidden></p>
+      <div class="table-scroll" id="entries-table"><table><thead><tr><th scope="col">Name</th><th scope="col">Type</th><th scope="col">Size</th><th scope="col">Modified</th></tr></thead><tbody id="entries"></tbody></table></div>
+      <div class="page-links" id="pages" hidden><button id="prev" class="button secondary" type="button">Previous</button><span id="page-number"></span><button id="next" class="button secondary" type="button">Next</button></div>
+      <div class="folder-choice" id="choose" hidden>
+        <h2 id="choice-title">Choose storage folder</h2><p id="choice-help"></p>
+        <form id="select-new" class="explorer-form"><label>New folder name<input name="folder" maxlength="100" value="FamilyDriveData" required></label><label id="move-password" hidden>Admin sign-in password<input name="password" type="password" maxlength="128" autocomplete="current-password"></label><button id="select-submit" class="button primary" type="submit">Create and use folder</button></form>
+        <button class="button secondary" type="button" id="select-current">Use this folder</button>
+      </div>
+    </section>
+    <p class="explorer-error" id="error" role="alert" hidden></p>
+  </main>
+</body>
+</html>

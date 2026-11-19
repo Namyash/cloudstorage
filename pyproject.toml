@@ -1,0 +1,30 @@
+[build-system]
+requires = ["setuptools>=77", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "family-drive"
+version = "0.1.0"
+description = "Self-hosted household file storage on drives the administrator selects"
+readme = "README.md"
+requires-python = ">=3.10"
+dynamic = ["dependencies"]
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Operating System :: Microsoft :: Windows",
+    "Programming Language :: Python :: 3 :: Only",
+]
+
+[project.scripts]
+family-drive = "family_drive.host:main"
+
+[tool.setuptools]
+packages = ["family_drive"]
+package-dir = {family_drive = "."}
+include-package-data = false
+
+[tool.setuptools.package-data]
+family_drive = ["web/*.html", "web/*.css", "web/*.js"]
+
+[tool.setuptools.dynamic]
+dependencies = {file = ["requirements.txt"]}
