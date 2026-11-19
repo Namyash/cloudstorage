@@ -7,7 +7,7 @@ Family Drive is a browser-based file server for a drive connected to your home c
 With Python 3.10 or newer, install the wheel supplied with the release. Then run Family Drive and open `http://127.0.0.1:8765/`.
 
 ```powershell
-py -3 -m pip install .\family_drive-0.1.0-py3-none-any.whl
+py -3 -m pip install .\family_drive-0.1.1-py3-none-any.whl
 py -3 -m family_drive
 ```
 

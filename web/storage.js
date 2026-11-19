@@ -8,6 +8,11 @@ let choosing = false;
 let authNeeded = false;
 let includeSystem = false;
 let moveRequested = false;
+const driveRows = new Map();
+const emptyDrives = document.createElement('p');
+emptyDrives.className = 'quiet-state';
+emptyDrives.textContent = 'Windows currently reports no drive letters.';
+let renderedDisks;
 
 const eligible = volume => volume.eligible || (includeSystem && volume.system && volume.ready);
 
@@ -19,6 +24,10 @@ function bytes(size) {
   if (size === null || size === undefined) return '—';
   const [base, unit] = [[1e9, 'GB'], [1e6, 'MB'], [1e3, 'KB'], [1, 'B']].find(([base]) => size >= base) || [1, 'B'];
   return `${new Intl.NumberFormat(undefined, { maximumFractionDigits: 2 }).format(size / base)} ${unit}`;
+}
+
+function setText(node, value) {
+  if (node.textContent !== value) node.textContent = value;
 }
 
 function report(message = '') {
@@ -42,34 +51,69 @@ function setStatus(label, detail, mode) {
   target.dataset.state = mode;
 }
 
+function newDriveRow(drive) {
+  const row = document.createElement('div');
+  row.className = 'volume-entry';
+  row.innerHTML = '<div><strong></strong><p></p></div><button class="button secondary" type="button">Browse</button><span class="badge"></span><progress max="100"></progress>';
+  const browse = row.querySelector('button');
+  const meter = row.querySelector('progress');
+  browse.dataset.drive = drive;
+  browse.setAttribute('aria-label', `Browse ${drive}`);
+  meter.setAttribute('aria-label', `Disk used on ${drive}`);
+  return { row, browse, meter, title: row.querySelector('strong'), detail: row.querySelector('p'), badge: row.querySelector('.badge') };
+}
+
 function displayVolumes() {
-  const listing = state.volumes.map(volume => {
+  const container = el('volumes');
+  const detected = new Set(state.volumes.map(volume => volume.drive));
+  for (const [drive, entry] of driveRows) {
+    if (!detected.has(drive)) {
+      entry.row.remove();
+      driveRows.delete(drive);
+    }
+  }
+  if (!detected.size && !emptyDrives.isConnected) container.append(emptyDrives);
+  else if (detected.size && emptyDrives.isConnected) emptyDrives.remove();
+
+  // Keep the existing controls attached while free space changes in the background.
+  state.volumes.forEach((volume, index) => {
+    let entry = driveRows.get(volume.drive);
+    if (!entry) {
+      entry = newDriveRow(volume.drive);
+      driveRows.set(volume.drive, entry);
+    }
+    if (container.children[index] !== entry.row) container.insertBefore(entry.row, container.children[index] ?? null);
     const title = volume.label ? `${volume.drive} ${volume.label}` : volume.drive;
     const status = volume.system ? 'Windows system drive' : volume.eligible ? 'Ready' : volume.ready ? 'Unavailable' : 'No accessible volume';
     const detail = volume.ready ? `${bytes(volume.free)} free of ${bytes(volume.capacity)}` : volume.kind;
     const usage = volume.ready && volume.capacity > 0 ? Math.round(100 * (volume.capacity - volume.free) / volume.capacity) : 0;
-    const action = eligible(volume) && state.unlocked && state.mode !== 'moving'
-      ? `<button class="button secondary" data-drive="${escape(volume.drive)}" type="button" ${choosing ? 'disabled' : ''}>Browse <span class="visually-hidden">${escape(volume.drive)}</span></button>`
-      : `<span class="badge ${volume.eligible ? 'role-admin' : 'muted-badge'}">${escape(status)}</span>`;
+    const canBrowse = eligible(volume) && state.unlocked && state.mode !== 'moving';
     const ready = volume.system && includeSystem ? ' · System drive' : volume.eligible && state.unlocked ? ' · Ready' : '';
-    return `<div class="volume-entry"><div><strong>${escape(title)}</strong><p>${escape(detail)}${ready}</p></div>${action}${volume.ready ? `<progress max="100" value="${usage}" aria-label="Disk used on ${escape(volume.drive)}"></progress>` : ''}</div>`;
-  }).join('');
-  const content = listing || '<p class="quiet-state">Windows currently reports no drive letters.</p>';
-  if (el('volumes').innerHTML !== content) {
-    const focusedDrive = el('volumes').contains(document.activeElement) ? document.activeElement.dataset.drive : null;
-    el('volumes').innerHTML = content;
-    if (focusedDrive) [...el('volumes').querySelectorAll('[data-drive]')].find(button => button.dataset.drive === focusedDrive)?.focus();
-  }
+    setText(entry.title, title);
+    setText(entry.detail, detail + ready);
+    setText(entry.badge, status);
+    entry.badge.classList.toggle('role-admin', volume.eligible);
+    entry.badge.classList.toggle('muted-badge', !volume.eligible);
+    entry.browse.hidden = !canBrowse;
+    entry.browse.disabled = choosing;
+    entry.badge.hidden = canBrowse;
+    entry.meter.hidden = !volume.ready;
+    if (entry.meter.value !== usage) entry.meter.value = usage;
+  });
+
   const disks = state.disks;
-  const hardware = disks?.length ? disks.map(name => `<div class="disk-entry"><strong>${escape(name)}</strong><span class="badge role-admin">Detected</span></div>`).join('') :
-    `<p class="quiet-state">${disks === null ? 'Windows disk hardware information is unavailable.' : 'Windows reports no connected disk hardware.'}</p>`;
-  if (el('disks').innerHTML !== hardware) el('disks').innerHTML = hardware;
+  const diskList = JSON.stringify(disks);
+  if (renderedDisks !== diskList) {
+    el('disks').innerHTML = disks?.length ? disks.map(name => `<div class="disk-entry"><strong>${escape(name)}</strong><span class="badge role-admin">Detected</span></div>`).join('') :
+      `<p class="quiet-state">${disks === null ? 'Windows disk hardware information is unavailable.' : 'Windows reports no connected disk hardware.'}</p>`;
+    renderedDisks = diskList;
+  }
 }
 
 function displayState() {
   el('inventory').hidden = false;
   el('home').hidden = state.mode !== 'active';
-  el('home').textContent = 'Open Family Drive';
+  setText(el('home'), 'Open Family Drive');
   const ready = state.volumes.some(eligible);
   const moving = state.mode === 'moving';
   const active = state.mode === 'active';
@@ -77,21 +121,21 @@ function displayState() {
   el('unlock-panel').hidden = active || moving || state.unlocked || !ready;
   el('system-option').hidden = moving || !state.volumes.some(volume => volume.system && volume.ready);
   el('move-open').hidden = !active || !state.canMove;
-  el('move-open').textContent = moveRequested ? 'Cancel drive change' : 'Change storage location';
+  setText(el('move-open'), moveRequested ? 'Cancel drive change' : 'Change storage location');
   el('move-progress').hidden = !moving;
   el('move-result').hidden = !active || !['done', 'failed'].includes(state.move?.phase);
   if (active && state.move?.phase === 'done') {
-    el('move-result').textContent = 'Storage move finished. Family Drive is using the new folder. The previous folder is a backup.';
+    setText(el('move-result'), 'Storage move finished. Family Drive is using the new folder. The previous folder is a backup.');
     el('move-result').dataset.state = 'active';
   } else if (active && state.move?.phase === 'failed') {
-    el('move-result').textContent = state.move.error;
+    setText(el('move-result'), state.move.error);
     el('move-result').dataset.state = 'offline';
   }
   if (moving) {
     setStatus('Storage move in progress', 'Family Drive is pausing uploads and changes while it copies and verifies your household data.', 'setup');
     const job = state.move;
-    el('move-detail').textContent = job.phase === 'waiting' ? 'Waiting for current requests to finish.' :
-      job.phase === 'verifying' ? 'Verifying the database and activating the new folder.' : `${bytes(job.copied)} of ${bytes(job.total)} copied · ${job.files} of ${job.fileCount} files verified`;
+    setText(el('move-detail'), job.phase === 'waiting' ? 'Waiting for current requests to finish.' :
+      job.phase === 'verifying' ? 'Verifying the database and activating the new folder.' : `${bytes(job.copied)} of ${bytes(job.total)} copied · ${job.files} of ${job.fileCount} files verified`);
     if (job.total > 0) el('move-meter').value = Math.min(100, Math.round(100 * job.copied / job.total));
     else el('move-meter').removeAttribute('value');
   } else if (active) setStatus('Storage is connected', moveRequested ? 'Browse the destination drive or folder below, then choose a new folder name.' : `Family Drive uses ${state.selected}`, 'active');
@@ -143,10 +187,10 @@ function updateChoice() {
   el('select-current').disabled = choosing || !view.path || (reconnect && !view.listing.managed);
   el('move-password').hidden = !moving;
   el('move-password').querySelector('input').required = moving;
-  el('select-submit').textContent = moving ? 'Copy and switch storage' : 'Create and use folder';
-  el('choice-title').textContent = moving ? 'Choose new storage folder' : reconnect ? 'Reconnect your storage' : 'Choose storage folder';
-  el('select-current').textContent = reconnect ? 'Reconnect this folder' : 'Use this folder';
-  el('choice-help').textContent = moving ? 'Family Drive copies your accounts and files, checks the copy, and then switches. Your previous folder stays available as a backup.' : reconnect ? 'Browse to your original Family Drive folder if Windows changed the drive letter.' : 'Create a dedicated folder or use an existing Family Drive folder or an empty folder.';
+  setText(el('select-submit'), moving ? 'Copy and switch storage' : 'Create and use folder');
+  setText(el('choice-title'), moving ? 'Choose new storage folder' : reconnect ? 'Reconnect your storage' : 'Choose storage folder');
+  setText(el('select-current'), reconnect ? 'Reconnect this folder' : 'Use this folder');
+  setText(el('choice-help'), moving ? 'Family Drive copies your accounts and files, checks the copy, and then switches. Your previous folder stays available as a backup.' : reconnect ? 'Browse to your original Family Drive folder if Windows changed the drive letter.' : 'Create a dedicated folder or use an existing Family Drive folder or an empty folder.');
 }
 
 function displayFolder() {
