@@ -14,6 +14,7 @@ import shutil
 import sqlite3
 import tempfile
 import time
+import unicodedata
 from urllib.parse import urlsplit
 
 from flask import Flask, abort, g, jsonify, request, send_file, send_from_directory
@@ -33,7 +34,6 @@ MIN_FREE = 512 * 1024 * 1024
 SESSION_AGE = 12 * 60 * 60
 UPLOAD_AGE = 24 * 60 * 60
 ID = re.compile(r'[a-f0-9]{32}')
-USERNAME = re.compile(r'[a-z0-9][a-z0-9_.-]{1,39}')
 COOKIE = 'family_drive_session'
 DUMMY_SALT = secrets.token_bytes(16)
 
@@ -85,20 +85,29 @@ def check_password(password, stored):
     return stored is not None and hmac.compare_digest(candidate, stored)
 
 
-def valid_password(password):
-    if not isinstance(password, str) or not 14 <= len(password) <= 128:
-        abort(400, 'Use a password with 14 to 128 characters.')
-    return password
+def credential_text(value, label, *, trim=False):
+    if not isinstance(value, str):
+        abort(400, f'Enter your {label}.')
+    if trim:
+        value = value.strip()
+    if not value:
+        abort(400, f'Enter your {label}.')
+    try:
+        value.encode('utf-8')
+    except UnicodeEncodeError:
+        abort(400, f'Enter a valid {label}.')
+    return value
+
+
+def username_key(username):
+    return unicodedata.normalize('NFC', username.casefold())
 
 
 def named_account(data):
     name = data.get('name')
-    raw_username = data.get('username')
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 60:
         abort(400, 'Enter a display name of up to 60 characters.')
-    if not isinstance(raw_username, str) or not USERNAME.fullmatch(raw_username.strip().lower()):
-        abort(400, 'Use 2–40 characters. Start the username with a letter or number.')
-    return name.strip(), raw_username.strip().lower()
+    return name.strip(), credential_text(data.get('username'), 'username', trim=True)
 
 
 def number(value, label):
@@ -179,6 +188,12 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         db.executescript(SCHEMA)
         db.execute('BEGIN IMMEDIATE')
         user_columns = {row['name'] for row in db.execute('PRAGMA table_info(users)')}
+        if 'username_key' not in user_columns:
+            db.execute('ALTER TABLE users ADD COLUMN username_key TEXT')
+        users_to_index = db.execute('SELECT id, username FROM users WHERE username_key IS NULL').fetchall()
+        db.executemany('UPDATE users SET username_key = ? WHERE id = ?',
+                       ((username_key(row['username']), row['id']) for row in users_to_index))
+        db.execute('CREATE UNIQUE INDEX IF NOT EXISTS users_username_key ON users(username_key)')
         if 'vault_wrap' not in user_columns:
             db.execute('ALTER TABLE users ADD COLUMN vault_wrap TEXT')
         if 'recovery_wrap' not in user_columns:
@@ -352,9 +367,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         if storage_move is None or g.origin != loopback:
             abort(403, 'Open Storage explorer on the computer hosting Family Drive to move its data.')
         values = json_body()
-        password = values.get('password')
-        if not isinstance(password, str) or len(password) > 128:
-            abort(400, 'Enter your Family Drive sign-in password.')
+        password = credential_text(values.get('password'), 'Family Drive sign-in password')
         throttle('storage-move:' + user['id'], 8)
         if not check_password(password, user['password']):
             abort(400, 'The sign-in password is incorrect.')
@@ -369,7 +382,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             abort(409, 'The admin account already exists.')
         data = json_body()
         name, username = named_account(data)
-        chosen_password = valid_password(data.get('password'))
+        chosen_password = credential_text(data.get('password'), 'password')
         throttle('setup-code', 8)
         code = data.get('code')
         if not isinstance(code, str) or not hmac.compare_digest(code.strip().encode(), setup_code.encode()):
@@ -379,27 +392,24 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         with write() as db:
             if db.execute('SELECT 1 FROM users LIMIT 1').fetchone():
                 abort(409, 'The admin account already exists.')
-            db.execute('INSERT INTO users(id, username, name, role, password, quota, created) VALUES(?, ?, ?, ?, ?, ?, ?)',
-                       (uid, username, name, 'admin', password, 0, now()))
+            db.execute('INSERT INTO users(id, username, username_key, name, role, password, quota, created) VALUES(?, ?, ?, ?, ?, ?, ?, ?)',
+                       (uid, username, username_key(username), name, 'admin', password, 0, now()))
             db.execute("DELETE FROM attempts WHERE key IN ('setup', 'setup-code')")
         return signed_in(uid)
 
     @app.post('/api/login')
     def login():
         data = json_body()
-        username, password = data.get('username'), data.get('password')
-        if not isinstance(username, str) or not isinstance(password, str) or len(password) > 128:
-            abort(400, 'Enter your username and password.')
-        username = username.strip().lower()
-        if not USERNAME.fullmatch(username):
-            abort(401, 'The username or password is incorrect, or the account is inactive.')
+        key = username_key(credential_text(data.get('username'), 'username', trim=True))
+        password = credential_text(data.get('password'), 'password')
+        attempt_key = 'login:' + hashlib.sha256(key.encode('utf-8')).hexdigest()
         throttle('login:all', 70)
-        throttle('login:' + username, 8)
-        user = one('SELECT * FROM users WHERE username = ?', (username,))
+        throttle(attempt_key, 8)
+        user = one('SELECT * FROM users WHERE username_key = ?', (key,))
         if (not check_password(password, user['password'] if user else None) or not user['active']
                 or (user['expires'] is not None and user['expires'] <= now())):
             abort(401, 'The username or password is incorrect, or the account is inactive.')
-        connection().execute('DELETE FROM attempts WHERE key = ?', ('login:' + username,))
+        connection().execute('DELETE FROM attempts WHERE key = ?', (attempt_key,))
         return signed_in(user['id'])
 
     @app.post('/api/logout')
@@ -414,13 +424,11 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
     def change_password():
         user = require_user(allow_change=True)
         data = json_body()
-        current = data.get('current')
-        if not isinstance(current, str) or len(current) > 128:
-            abort(400, 'Enter your current password.')
+        current = credential_text(data.get('current'), 'current password')
         throttle('password:' + user['id'], 8)
         if not check_password(current, user['password']):
             abort(400, 'The current password is incorrect.')
-        password = valid_password(data.get('password'))
+        password = credential_text(data.get('password'), 'new password')
         if current == password:
             abort(400, 'Choose a different password.')
         updated = password_hash(password)
@@ -507,9 +515,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         user = require_user()
         data = json_body()
         revision = number(data.get('revision'), 'vault revision')
-        password = data.get('password')
-        if not isinstance(password, str) or len(password) > 128:
-            abort(400, 'Enter your Family Drive sign-in password.')
+        password = credential_text(data.get('password'), 'Family Drive sign-in password')
         throttle('vault-reset:' + user['id'], 8)
         if not check_password(password, user['password']):
             abort(400, 'The sign-in password is incorrect.')
@@ -547,6 +553,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         require_user(admin=True)
         data = json_body()
         name, username = named_account(data)
+        key = username_key(username)
         role, quota = data.get('role'), number(data.get('quota'), 'quota')
         if role not in ('family', 'guest'):
             abort(400, 'Choose family member or guest.')
@@ -557,10 +564,10 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         uid = secrets.token_hex(16)
         with write() as db:
             check_allocation(quota)
-            if one('SELECT 1 FROM users WHERE username = ?', (username,)):
+            if one('SELECT 1 FROM users WHERE username_key = ?', (key,)):
                 abort(409, 'That username is already in use.')
-            db.execute('''INSERT INTO users(id, username, name, role, password, quota, expires, exchange, change_password, created)
-                       VALUES(?, ?, ?, ?, ?, ?, ?, ?, 1, ?)''', (uid, username, name, role, password, quota, expiry, exchange, now()))
+            db.execute('''INSERT INTO users(id, username, username_key, name, role, password, quota, expires, exchange, change_password, created)
+                       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)''', (uid, username, key, name, role, password, quota, expiry, exchange, now()))
         return jsonify(id=uid, username=username, temporaryPassword=temporary), 201
 
     @app.patch('/api/people/<uid>')

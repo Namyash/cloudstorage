@@ -137,11 +137,7 @@ function avatar(user, extra = '') {
   return `<span class="avatar avatar-${user.role} ${extra}" aria-hidden="true">${esc(initials)}</span>`;
 }
 
-function usernameField(newAccount = false) {
-  const constraints = newAccount ? 'minlength="2" pattern="[a-zA-Z0-9][a-zA-Z0-9_.\\-]{1,39}" aria-describedby="username-hint"' : '';
-  const hint = newAccount ? '<span id="username-hint" class="username-hint">Use 2–40 characters. Start with a letter or number.</span>' : '';
-  return `<div><label>Username<input name="username" autocomplete="username" required maxlength="40" autocapitalize="none" ${constraints}></label>${hint}</div>`;
-}
+const usernameField = '<label>Username<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>';
 
 function authView() {
   const setup = data.setup;
@@ -151,9 +147,8 @@ function authView() {
   app.innerHTML = `<main class="auth-shell"><aside class="auth-side">${brand()}<div class="auth-message"><div class="auth-symbol">${icon('drive', 52)}</div><h2>Your family’s files.<br>On your own drive.</h2><p>A home for the photos and documents you choose to keep.</p></div><div class="auth-foot">${icon('shield', 18)} Private family storage</div></aside>
     <section class="auth-main"><div class="auth-mobile">${brand()}</div><div class="auth-card"><h1>${title}</h1><p>${description}</p><form id="auth-form">
       ${setup ? '<label>Setup code<input name="code" autocomplete="off" required></label><label>Display name<input name="name" autocomplete="name" maxlength="60" required></label>' : ''}
-      ${change ? '<label>Temporary or current password<input name="current" type="password" autocomplete="current-password" required maxlength="128"></label>' : usernameField(setup)}
-      <label>${change ? 'New password' : 'Password'}<input name="password" type="password" autocomplete="${setup || change ? 'new-password' : 'current-password'}" required maxlength="128" ${setup || change ? 'minlength="14"' : ''}></label>
-      ${setup || change ? '<span class="field-note">Use at least 14 characters.</span>' : ''}
+      ${change ? '<label>Temporary or current password<input name="current" type="password" autocomplete="current-password" required></label>' : usernameField}
+      <label>${change ? 'New password' : 'Password'}<input name="password" type="password" autocomplete="${setup || change ? 'new-password' : 'current-password'}" required></label>
       <p class="form-error" role="alert" hidden></p><button class="button primary" type="submit">${setup ? 'Create admin account' : change ? 'Save password' : 'Sign in'}</button>
       ${change ? '<button class="button text-button" type="button" data-action="logout">Sign out</button>' : ''}
     </form></div></section></main>`;
@@ -415,7 +410,7 @@ function showCredential(account) {
 
 function addPerson() {
   const form = formDialog('Add person', 'Give a family member or guest their own login and storage quota.',
-    `<label>Display name<input name="name" required maxlength="60"></label>${usernameField(true)}
+    `<label>Display name<input name="name" required maxlength="60"></label>${usernameField}
     <div class="form-grid"><label>Role<select name="role"><option value="family">Family member</option><option value="guest">Guest</option></select></label>${quotaField(null)}</div>${guestFields({ role: 'family' })}`, 'Create account', async values => {
     const account = await api('people', { method: 'POST', data: { ...values, quota: Math.round(Number(values.quota) * GB), ...guestValues(values) } });
     await refresh();
@@ -524,7 +519,7 @@ function resetVaultDialog() {
   const current = data.vault;
   const help = current.fileCount ? 'Your existing files will move to a locked archive. Enter your sign-in password to continue and create a fresh vault.' : 'Enter your sign-in password to clear the vault settings and choose a new passphrase.';
   formDialog('Reset private vault', help,
-    '<label>Family Drive sign-in password<input name="password" type="password" maxlength="128" autocomplete="current-password" required></label>',
+    '<label>Family Drive sign-in password<input name="password" type="password" autocomplete="current-password" required></label>',
     current.fileCount ? 'Archive files and reset' : 'Reset vault', async values => {
       const result = await api('vault/reset', { method: 'POST', data: { password: values.password, revision: current.revision } });
       clearVaultKey();
@@ -666,7 +661,7 @@ function confirmDelete(file) {
 
 function accountSettings() {
   formDialog('Account', `${esc(data.user.name)} · @${esc(data.user.username)}`,
-    '<label>Current password<input type="password" name="current" required autocomplete="current-password" maxlength="128"></label><label>New password<input type="password" name="password" required autocomplete="new-password" minlength="14" maxlength="128"></label>',
+    '<label>Current password<input type="password" name="current" required autocomplete="current-password"></label><label>New password<input type="password" name="password" required autocomplete="new-password"></label>',
     'Change password', async values => {
       await api('password', { method: 'POST', data: values });
       dialog.close();
