@@ -3,6 +3,7 @@ from pathlib import Path
 import secrets
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import patch
 
 from server import create_app
 
@@ -176,3 +177,23 @@ class FamilyAccessTest(unittest.TestCase):
             self.assertEqual(archive['folderCount'], 1)
             self.assertEqual(self.request(member, 'GET', f'files?space=archive:{archive["id"]}').json['folders'][0]['label'], label)
             self.request(admin, 'GET', f'files?space=archive:{archive["id"]}', 404)
+
+    @patch('server.ACCOUNT_ITEM_LIMIT', 2)
+    def test_item_capacity_counts_empty_files_and_folders_until_purge(self):
+        with TemporaryDirectory() as directory:
+            app = create_app(directory)
+            admin = app.test_client()
+            self.request(admin, 'POST', 'setup', json={'code': app.config['SETUP_CODE'],
+                         'name': 'Admin', 'username': 'admin', 'password': 'fixture password'})
+            self.request(admin, 'PATCH', 'family', json={'quota': 1000})
+            folder, empty, next_id = [secrets.token_hex(16) for _ in range(3)]
+            upload = {'space': 'family', 'id': empty, 'size': 0, 'label': 'Empty.txt'}
+            self.request(admin, 'POST', 'folders', 201, json={'id': folder, 'space': 'family', 'label': 'Photos'})
+            self.request(admin, 'POST', 'uploads', 201, json=upload)
+            self.request(admin, 'POST', 'uploads', 409, json={**upload, 'id': next_id})
+            self.request(admin, 'POST', 'folders', 409, json={'id': next_id, 'space': 'family', 'label': 'Archive'})
+            items = {'items': [{'kind': 'file', 'id': empty}]}
+            self.request(admin, 'POST', 'items/trash', json=items)
+            self.request(admin, 'POST', 'uploads', 409, json={**upload, 'id': next_id})
+            self.request(admin, 'POST', 'items/purge', json=items)
+            self.request(admin, 'POST', 'uploads', 201, json={**upload, 'id': next_id})

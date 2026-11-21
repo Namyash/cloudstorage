@@ -170,6 +170,10 @@ const usernameField = '<label>Username<input name="username" autocomplete="usern
 
 function authView() {
   displayedPage = undefined;
+  if (data.setupOnHost) {
+    app.innerHTML = '<main class="loading"><h1>Family Drive needs setup</h1><p>Create the first admin account on the computer hosting Family Drive.</p></main>';
+    return;
+  }
   const setup = data.setup;
   const change = data.changePassword;
   const title = setup ? 'Set up your family drive' : change ? 'Choose your own password' : 'Welcome back';

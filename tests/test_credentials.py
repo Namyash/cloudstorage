@@ -17,8 +17,8 @@ class CredentialTest(unittest.TestCase):
         self.addCleanup(directory.cleanup)
         self.root = Path(directory.name)
 
-    def send(self, client, endpoint, status=200, **data):
-        response = client.post('/api/' + endpoint, base_url=ORIGIN, json=data,
+    def send(self, client, endpoint, status=200, *, origin=ORIGIN, **data):
+        response = client.post('/api/' + endpoint, base_url=origin, json=data,
                                headers={'X-Family-Drive': '1'}, buffered=True)
         self.assertEqual(response.status_code, status, response.get_json(silent=True))
         return response.get_json()
@@ -78,3 +78,38 @@ class CredentialTest(unittest.TestCase):
         self.send(client, 'login', username='OLD-LOGIN', password='existing-test-passphrase')
         state = client.get('/api/state', base_url=ORIGIN).get_json()
         self.assertEqual(state['user']['username'], 'old-login')
+
+    def test_initial_setup_requires_the_host_but_normal_remote_sign_in_works(self):
+        remote = 'https://family.example.test'
+        app = create_app(self.root, public_url=remote)
+        client = app.test_client()
+        setup = {'name': 'Administrator', 'username': 'admin', 'password': 'fixture password'}
+        state = client.get('/api/state', base_url=remote).get_json()
+        self.assertFalse(state['setup'])
+        self.assertTrue(state['setupOnHost'])
+        self.send(client, 'setup', 403, origin=remote, code=app.config['SETUP_CODE'], **setup)
+        self.send(client, 'setup', 403, code='invalid–code', **setup)
+        self.send(client, 'setup', code=app.config['SETUP_CODE'], **setup)
+        self.send(client, 'login', origin=remote, username='admin', password='fixture password')
+        self.assertTrue(client.get_cookie('family_drive_session', domain='family.example.test').secure)
+
+    def test_reset_revokes_existing_sessions_and_legacy_household_throttle_is_ignored(self):
+        app = create_app(self.root)
+        admin, member, other_session = (app.test_client() for _ in range(3))
+        self.send(admin, 'setup', code=app.config['SETUP_CODE'], name='Administrator',
+                  username='admin', password='fixture admin password')
+        account = self.send(admin, 'people', 201, name='Family member', username='member', role='family', quota=0)
+        self.send(member, 'login', username='member', password=account['temporaryPassword'])
+        self.send(member, 'password', current=account['temporaryPassword'], password='fixture member password')
+        self.send(other_session, 'login', username='member', password='fixture member password')
+
+        reset = self.send(admin, 'people/' + account['id'] + '/reset')
+        for client in (member, other_session):
+            self.assertIsNone(client.get('/api/state', base_url=ORIGIN).get_json()['user'])
+        self.send(other_session, 'login', 401, username='member', password='fixture member password')
+        with closing(sqlite3.connect(self.root / 'family-drive.sqlite3')) as db:
+            db.execute('INSERT INTO attempts VALUES (?, ?, ?)', ('login:all', 70, now() + 300))
+            db.commit()
+        self.send(member, 'login', username='member', password=reset['temporaryPassword'])
+        self.send(member, 'password', current=reset['temporaryPassword'], password='fixture replacement password')
+        self.send(admin, 'login', username='admin', password='fixture admin password')

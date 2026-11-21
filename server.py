@@ -13,6 +13,7 @@ import secrets
 import shutil
 import sqlite3
 import tempfile
+from threading import BoundedSemaphore
 import time
 import unicodedata
 from urllib.parse import urlsplit
@@ -33,6 +34,7 @@ OVERHEAD = 28  # 12-byte IV and 16-byte authentication tag
 MIN_FREE = 512 * 1024 * 1024
 SESSION_AGE = 12 * 60 * 60
 UPLOAD_AGE = 24 * 60 * 60
+ACCOUNT_ITEM_LIMIT = 25_000
 ID = re.compile(r'[a-f0-9]{32}')
 COOKIE = 'family_drive_session'
 DUMMY_SALT = secrets.token_bytes(16)
@@ -74,6 +76,7 @@ CREATE TABLE IF NOT EXISTS folders (
 );
 CREATE INDEX IF NOT EXISTS folders_parent ON folders(parent_id);
 CREATE INDEX IF NOT EXISTS folders_space ON folders(space, archive_id);
+CREATE INDEX IF NOT EXISTS folders_owner ON folders(owner);
 CREATE TABLE IF NOT EXISTS stars (
   user_id TEXT NOT NULL REFERENCES users(id), kind TEXT NOT NULL, item_id TEXT NOT NULL,
   PRIMARY KEY (user_id, kind, item_id)
@@ -191,6 +194,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
     objects.mkdir(exist_ok=True)
     database = root / 'family-drive.sqlite3'
     app = Flask(__name__, static_folder=None)
+    login_slots = BoundedSemaphore(3)
     loopback = f'http://127.0.0.1:{port}'
     origins = {urlsplit(loopback).netloc: loopback}
     if public_url:
@@ -248,6 +252,11 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
     def one(sql, values=()):
         return connection().execute(sql, values).fetchone()
 
+    def session_user(session):
+        return one('''SELECT users.* FROM users JOIN sessions ON user_id = users.id
+            WHERE token = ? AND sessions.expires > ? AND active = 1
+            AND (users.expires IS NULL OR users.expires > ?)''', (session, now(), now()))
+
     @contextmanager
     def write():
         db = connection()
@@ -304,9 +313,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             token = request.cookies.get(COOKIE, '')
             if len(token) == 43:
                 g.session = session_hash(token)
-                g.user = one('''SELECT users.* FROM users JOIN sessions ON user_id = users.id
-                    WHERE token = ? AND sessions.expires > ? AND active = 1
-                    AND (users.expires IS NULL OR users.expires > ?)''', (g.session, now(), now()))
+                g.user = session_user(g.session)
 
     @app.after_request
     def headers(response):
@@ -345,9 +352,9 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             abort(403, 'Admin access is required.')
         return user
 
-    def signed_in(user_id):
+    def signed_in(db, user_id):
         token = secrets.token_urlsafe(32)
-        connection().execute('INSERT INTO sessions VALUES (?, ?, ?)', (session_hash(token), user_id, now() + SESSION_AGE))
+        db.execute('INSERT INTO sessions VALUES (?, ?, ?)', (session_hash(token), user_id, now() + SESSION_AGE))
         response = jsonify(ok=True)
         response.set_cookie(COOKIE, token, max_age=SESSION_AGE, httponly=True, samesite='Strict', secure=g.origin.startswith('https://'))
         return response
@@ -411,6 +418,8 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
 
     @app.post('/api/setup')
     def setup():
+        if g.origin != loopback:
+            abort(403, 'Create the first admin account on the computer hosting Family Drive.')
         if not setup_code or one('SELECT 1 FROM users LIMIT 1'):
             abort(409, 'The admin account already exists.')
         data = json_body()
@@ -418,7 +427,8 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         chosen_password = credential_text(data.get('password'), 'password')
         throttle('setup-code', 8)
         code = data.get('code')
-        if not isinstance(code, str) or not hmac.compare_digest(code.strip().encode(), setup_code.encode()):
+        code = code.strip() if isinstance(code, str) else ''
+        if not code.isascii() or not hmac.compare_digest(code, setup_code):
             abort(403, 'Enter the setup code displayed on the host computer.')
         password = password_hash(chosen_password)
         uid = secrets.token_hex(16)
@@ -428,22 +438,32 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             db.execute('INSERT INTO users(id, username, username_key, name, role, password, quota, created) VALUES(?, ?, ?, ?, ?, ?, ?, ?)',
                        (uid, username, username_key(username), name, 'admin', password, 0, now()))
             db.execute("DELETE FROM attempts WHERE key IN ('setup', 'setup-code')")
-        return signed_in(uid)
+            return signed_in(db, uid)
 
     @app.post('/api/login')
     def login():
         data = json_body()
         key = username_key(credential_text(data.get('username'), 'username', trim=True))
         password = credential_text(data.get('password'), 'password')
-        attempt_key = 'login:' + hashlib.sha256(key.encode('utf-8')).hexdigest()
-        throttle('login:all', 70)
-        throttle(attempt_key, 8)
-        user = one('SELECT * FROM users WHERE username_key = ?', (key,))
-        if (not check_password(password, user['password'] if user else None) or not user['active']
-                or (user['expires'] is not None and user['expires'] <= now())):
-            abort(401, 'The username or password is incorrect, or the account is inactive.')
-        connection().execute('DELETE FROM attempts WHERE key = ?', (attempt_key,))
-        return signed_in(user['id'])
+        if not login_slots.acquire(blocking=False):
+            abort(429, 'Sign-in is busy. Try again in a moment.')
+        try:
+            user = one('SELECT id, password FROM users WHERE username_key = ?', (key,))
+            attempt_key = 'login:' + hashlib.sha256(key.encode('utf-8')).hexdigest()
+            throttle(attempt_key, 8)
+            failed = 'The username or password is incorrect, or the account is inactive.'
+            valid = check_password(password, user['password'] if user else None)
+            if user is None or not valid:
+                abort(401, failed)
+            with write() as db:
+                current = one('''SELECT 1 FROM users WHERE id = ? AND password = ? AND active = 1
+                    AND (expires IS NULL OR expires > ?)''', (user['id'], user['password'], now()))
+                if not current:
+                    abort(401, failed)
+                db.execute('DELETE FROM attempts WHERE key = ?', (attempt_key,))
+                return signed_in(db, user['id'])
+        finally:
+            login_slots.release()
 
     @app.post('/api/logout')
     def logout():
@@ -466,9 +486,13 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             abort(400, 'Choose a different password.')
         updated = password_hash(password)
         with write() as db:
+            live_user = session_user(g.session)
+            if live_user is None or live_user['password'] != user['password']:
+                abort(401, 'Your sign-in changed. Sign in again before changing your password.')
             db.execute('UPDATE users SET password = ?, change_password = 0 WHERE id = ?', (updated, user['id']))
             db.execute('DELETE FROM sessions WHERE user_id = ?', (user['id'],))
-        return signed_in(user['id'])
+            db.execute('DELETE FROM attempts WHERE key = ?', ('password:' + user['id'],))
+            return signed_in(db, user['id'])
 
     def family_quota():
         return int(one("SELECT value FROM config WHERE key = 'family_quota'")['value'])
@@ -505,7 +529,9 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
     def state():
         user = g.user
         if user is None:
-            return jsonify(user=None, setup=not one('SELECT 1 FROM users LIMIT 1'))
+            needs_setup = not one('SELECT 1 FROM users LIMIT 1')
+            return jsonify(user=None, setup=needs_setup and g.origin == loopback,
+                           setupOnHost=needs_setup and g.origin != loopback)
         result = {'user': account(user), 'changePassword': bool(user['change_password'])}
         if user['change_password']:
             return jsonify(result)
@@ -594,6 +620,17 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         allocated = one('SELECT COALESCE(SUM(quota), 0) AS amount FROM users')['amount'] + family_quota()
         if new > previous and allocated - previous + new > allocation_capacity(shutil.disk_usage(root).free):
             abort(409, 'This allocation exceeds the available drive capacity with the other quotas.')
+
+    def check_item_capacity(owner):
+        count = one('''SELECT (SELECT COUNT(*) FROM files WHERE owner = ?)
+                             + (SELECT COUNT(*) FROM folders WHERE owner = ?) AS amount''', (owner, owner))['amount']
+        if count >= ACCOUNT_ITEM_LIMIT:
+            abort(409, 'This account has reached its file and folder limit. Permanently delete items to make room.')
+
+    def check_drive_reserve(additional=0):
+        pending = one("SELECT COALESCE(SUM(stored-received), 0) AS amount FROM files WHERE state = 'uploading'")['amount']
+        if pending + additional > shutil.disk_usage(root).free - MIN_FREE:
+            abort(409, 'The drive does not have enough free space.')
 
     @app.post('/api/people')
     def add_person():
@@ -817,6 +854,8 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             parent = destination(space, data.get('folderId'))
             if space == 'private':
                 verify_vault_revision(user, data.get('revision'))
+            check_item_capacity(user['id'])
+            check_drive_reserve()
             if one('SELECT 1 FROM folders WHERE id = ?', (folder_id,)):
                 abort(409, 'This folder already exists.')
             db.execute('INSERT INTO folders (id, owner, space, parent_id, label, created) VALUES (?, ?, ?, ?, ?, ?)',
@@ -847,9 +886,8 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             used = usage(space='family', reserved=True) if space == 'family' else usage(owner=user['id'], reserved=True)
             if quota == 0 or used + stored > quota:
                 abort(409, 'This file would exceed the storage quota.')
-            pending = one("SELECT COALESCE(SUM(stored-received), 0) AS amount FROM files WHERE state='uploading'")['amount']
-            if pending + stored > shutil.disk_usage(root).free - MIN_FREE:
-                abort(409, 'The drive does not have enough free space.')
+            check_item_capacity(user['id'])
+            check_drive_reserve(stored)
             if one('SELECT 1 FROM files WHERE id = ?', (fid,)) or (objects / fid).exists():
                 abort(409, 'This upload already exists. Try the file again.')
             with (objects / fid).open('xb'):
