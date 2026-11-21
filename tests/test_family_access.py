@@ -112,3 +112,67 @@ class FamilyAccessTest(unittest.TestCase):
             self.request(member, 'POST', 'vault/reset', json={'password': 'member password', 'revision': 1})
             self.request(member, 'PATCH', f'files/{private}', 409, json={'label': label, 'revision': 2})
             self.request(member, 'POST', 'files/bulk-delete', 409, json={'ids': [private]})
+
+    def test_nested_folder_lifecycle_and_shared_permissions(self):
+        with TemporaryDirectory() as directory:
+            app = create_app(directory)
+            admin, member = app.test_client(), app.test_client()
+            self.request(admin, 'POST', 'setup', json={'code': app.config['SETUP_CODE'],
+                         'name': 'Admin', 'username': 'admin', 'password': 'admin password'})
+            self.request(admin, 'PATCH', 'family', json={'quota': 1000})
+            account = self.request(admin, 'POST', 'people', 201, json={'name': 'Member', 'username': 'member',
+                                   'role': 'family', 'quota': 1000}).json
+            self.request(member, 'POST', 'login', json={'username': 'member', 'password': account['temporaryPassword']})
+            self.request(member, 'POST', 'password', json={'current': account['temporaryPassword'], 'password': 'member password'})
+
+            parent, child, file, pending, encrypted_folder = [secrets.token_hex(16) for _ in range(5)]
+            for folder_id, folder_id_parent in [(parent, None), (child, parent)]:
+                self.request(member, 'POST', 'folders', 201, json={'id': folder_id, 'space': 'family',
+                             'folderId': folder_id_parent, 'label': 'Photos'})
+            self.request(member, 'PATCH', f'folders/{child}', json={'label': 'Holiday'})
+            for client, fid in [(admin, file), (member, pending)]:
+                self.request(client, 'POST', 'uploads', 201, json={'id': fid, 'space': 'family',
+                             'folderId': child, 'size': 3, 'label': 'photo.jpg'})
+            self.request(admin, 'PUT', f'uploads/{file}/0', data=b'abc', content_type='application/octet-stream')
+            self.request(member, 'POST', 'folders', 404, json={'id': encrypted_folder, 'space': 'private',
+                         'folderId': child, 'label': 'Invalid'})
+
+            ancestor = {'items': [{'kind': 'folder', 'id': parent}]}
+            self.request(member, 'POST', 'items/move', 409, json={**ancestor, 'folderId': child})
+            self.request(member, 'POST', 'items/star', json={**ancestor, 'starred': True})
+            view = 'files?space=family'
+            self.assertTrue(next(x for x in self.request(member, 'GET', view).json['folders'] if x['id'] == parent)['starred'])
+            self.assertFalse(next(x for x in self.request(admin, 'GET', view).json['folders'] if x['id'] == parent)['starred'])
+            self.request(admin, 'POST', 'items/trash', 409, json=ancestor)
+            self.request(member, 'DELETE', f'uploads/{pending}')
+            self.request(member, 'POST', 'items/trash', 403, json=ancestor)
+            self.request(admin, 'POST', 'items/trash', json=ancestor)
+            state = self.request(admin, 'GET', view).json
+            self.assertEqual(state['files'], [])
+            self.assertEqual(state['folders'], [])
+            self.assertEqual([x['id'] for x in state['trashFolders']], [parent])
+            self.assertEqual(self.request(admin, 'GET', 'state').json['familyUsed'], 3)
+            self.request(admin, 'GET', f'files/{file}/blob', 404)
+            self.request(admin, 'POST', 'items/restore', json=ancestor)
+            self.assertEqual(self.request(admin, 'GET', f'files/{file}/blob').data, b'abc')
+            self.assertEqual(self.request(admin, 'GET', view).json['files'][0]['folderId'], child)
+            self.request(admin, 'POST', 'items/trash', json=ancestor)
+            self.request(admin, 'POST', 'items/purge', json=ancestor)
+            self.assertFalse((Path(directory) / 'objects' / file).exists())
+            self.assertEqual(self.request(admin, 'GET', 'state').json['familyUsed'], 0)
+
+            def packet(length):
+                return b64encode(secrets.token_bytes(length)).decode('ascii')
+
+            self.request(member, 'POST', 'vault', json={'salt': packet(16), 'verifier': packet(32),
+                         'wrappedKey': packet(60), 'recoveryWrap': packet(60), 'revision': 0})
+            label = packet(40)
+            self.request(member, 'POST', 'folders', 201, json={'id': encrypted_folder, 'space': 'private',
+                         'label': label, 'revision': 1})
+            self.request(admin, 'PATCH', f'folders/{encrypted_folder}', 404, json={'label': 'Admin'})
+            result = self.request(member, 'POST', 'vault/reset', json={'password': 'member password', 'revision': 1})
+            self.assertTrue(result.json['archiveCreated'])
+            archive = self.request(member, 'GET', 'state').json['archives'][0]
+            self.assertEqual(archive['folderCount'], 1)
+            self.assertEqual(self.request(member, 'GET', f'files?space=archive:{archive["id"]}').json['folders'][0]['label'], label)
+            self.request(admin, 'GET', f'files?space=archive:{archive["id"]}', 404)

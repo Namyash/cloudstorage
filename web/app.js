@@ -1,4 +1,4 @@
-import { downloadPrivate, fileContext, importVaultKey, openText, randomBytes, recoverySettings, seal, sealText, unlockSecret } from './vault.js';
+import { downloadPrivate, fileContext, importVaultKey, open, openText, overhead, randomBytes, recoverySettings, seal, sealText, unlockSecret } from './vault.js';
 
 const app = document.querySelector('#app');
 const dialog = document.querySelector('#dialog');
@@ -11,6 +11,15 @@ let vaultKey = null;
 let vaultTimer;
 let lastVaultActivity = 0;
 let files = [];
+let folders = [];
+let trash = [];
+let folderId = null;
+let fileView = 'browse';
+let gridView = localStorage.getItem('family-drive-layout') === 'grid';
+let previewUrl;
+let draggedItem;
+let loadToken = 0;
+let displayedPage;
 let search = '';
 let fileSort = 'newest';
 const selectedFiles = new Set();
@@ -18,7 +27,9 @@ const fileSorts = {
   newest: ['Newest first', (a, b) => b.created - a.created],
   oldest: ['Oldest first', (a, b) => a.created - b.created],
   name: ['Name A–Z', (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })],
+  reverseName: ['Name Z–A', (a, b) => b.name.localeCompare(a.name, undefined, { numeric: true })],
   size: ['Largest first', (a, b) => b.size - a.size],
+  smallest: ['Smallest first', (a, b) => a.size - b.size],
 };
 let transfer = null;
 let toastTimer;
@@ -44,6 +55,10 @@ const paths = {
   close: '<path d="m6 6 12 12M18 6 6 18"/>',
   copy: '<rect x="8" y="8" width="12" height="12" rx="2"/><path d="M16 8V6a2 2 0 0 0-2-2H6a2 2 0 0 0-2 2v8a2 2 0 0 0 2 2h2"/>',
   edit: '<path d="m15 5 4 4m-14 6 11-11a2.8 2.8 0 0 1 4 4L9 19l-5 1Z"/>',
+  more: '<circle cx="5" cy="12" r="1"/><circle cx="12" cy="12" r="1"/><circle cx="19" cy="12" r="1"/>',
+  star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>',
+  list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h1m-1 6h1m-1 6h1"/>',
+  clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
 };
 
 function icon(name, size = 20) {
@@ -112,6 +127,11 @@ const selectedVault = () => isArchive() ? data.archives.find(item => page === `a
 
 function clearVaultKey() {
   selectedFiles.clear();
+  if (isVaultPage()) {
+    files = [];
+    folders = [];
+    trash = [];
+  }
   clearTimeout(vaultTimer);
   vaultKey = null;
 }
@@ -149,6 +169,7 @@ function avatar(user, extra = '') {
 const usernameField = '<label>Username<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>';
 
 function authView() {
+  displayedPage = undefined;
   const setup = data.setup;
   const change = data.changePassword;
   const title = setup ? 'Set up your family drive' : change ? 'Choose your own password' : 'Welcome back';
@@ -182,6 +203,8 @@ function navigation() {
 }
 
 function layout(content, title) {
+  const entering = displayedPage !== page;
+  displayedPage = page;
   const items = navigation();
   const section = isArchive() ? 'private' : page.split(':')[0];
   const group = (key, label, symbol) => `<button class="nav-link ${section === key ? 'current' : ''}" data-page="${key}" ${section === key ? 'aria-current="page"' : ''}>${icon(symbol, 19)}<span>${label}</span></button>`;
@@ -192,7 +215,7 @@ function layout(content, title) {
     <div class="sidebar-bottom"><div class="drive-status"><span class="drive-glyph">${icon('drive', 18)}</span><span>Local storage<small><i></i> Drive connected</small></span></div>
       <div class="profile">${avatar(data.user)}<span class="profile-name">${esc(data.user.name)}<small>${roleName(data.user.role)}</small></span><button class="icon-button sidebar-button" data-action="logout" title="Sign out" aria-label="Sign out">${icon('logout', 18)}</button></div></div></aside>
     <div class="workspace"><header class="topbar"><div class="breadcrumbs"><span>Workspace</span>${icon('chevron', 14)}<strong>${esc(title)}</strong></div><button class="button settings-link" data-action="settings">${icon('settings', 19)}<span>Account</span></button></header>
-    <main class="content">${content}</main></div></div>`;
+    <main class="content${entering ? ' entering' : ''}">${content}</main></div></div>`;
   const ring = document.querySelector('.ring');
   if (ring) ring.style.setProperty('--fill', `${ring.dataset.percent}%`);
 }
@@ -255,26 +278,97 @@ function quotaBar(used, quota) {
     <progress max="100" value="${ratio(used, quota)}" aria-label="Storage used"></progress></div>`;
 }
 
+const itemKey = item => `${item.kind}:${item.id}`;
+const activeItems = () => [...folders, ...files];
+const itemByKey = key => [...activeItems(), ...trash].find(item => itemKey(item) === key);
+
 function visibleFiles() {
   const term = search.toLowerCase().trim();
-  return files.filter(file => file.name.toLowerCase().includes(term)).sort(fileSorts[fileSort][1]);
+  let source = activeItems();
+  if (fileView === 'trash') source = trash;
+  else if (fileView === 'starred') source = source.filter(item => item.starred);
+  else if (fileView === 'recent') source = files;
+  else if (!term) source = source.filter(item => item.folderId === folderId);
+  const compare = fileView === 'recent' ? fileSorts.newest[1] : fileSorts[fileSort][1];
+  return source.filter(item => item.name.toLowerCase().includes(term))
+    .sort((a, b) => (a.kind !== b.kind ? (a.kind === 'folder' ? -1 : 1) : compare(a, b)));
+}
+
+function itemCheckbox(item) {
+  return item.canDelete ? `<input type="checkbox" data-select-file="${itemKey(item)}" aria-label="Select ${esc(item.name)}" ${selectedFiles.has(itemKey(item)) ? 'checked' : ''} ${transfer ? 'disabled' : ''}>` : '';
+}
+
+function itemName(item) {
+  const glyph = `<span class="file-glyph ${item.kind}">${icon(item.kind, 19)}</span>`;
+  if (fileView === 'trash') return `<div class="item-name">${glyph}<strong>${esc(item.name)}</strong></div>`;
+  const action = item.kind === 'folder' ? 'open-folder' : 'preview-file';
+  return `<button class="item-name" data-action="${action}" data-id="${itemKey(item)}" ${transfer ? 'disabled' : ''}>${glyph}<strong>${esc(item.name)}</strong></button>`;
+}
+
+function itemLocation(item) {
+  if (fileView === 'trash' || (!search.trim() && fileView === 'browse')) return '';
+  const names = folderPath(item.folderId).map(folder => folder.name);
+  if (!names.length) return '';
+  return `<small class="item-owner">${esc(names.join(' / '))}</small>`;
+}
+
+function itemButtons(item) {
+  return `${!isArchive() && fileView !== 'trash' ? `<button class="icon-button star-button ${item.starred ? 'starred' : ''}" aria-pressed="${item.starred}" data-action="star-item" data-id="${itemKey(item)}" aria-label="Star ${esc(item.name)}" ${transfer ? 'disabled' : ''}>${icon('star', 18)}</button>` : ''}
+    <button class="icon-button" data-action="item-menu" data-id="${itemKey(item)}" title="More actions" aria-label="More actions for ${esc(item.name)}" ${transfer ? 'disabled' : ''}>${icon('more', 19)}</button>`;
+}
+
+function dragAttributes(item) {
+  if (transfer || isArchive() || fileView === 'trash') return '';
+  return `${item.canDelete ? `draggable="true" data-drag-item="${itemKey(item)}"` : ''} ${item.kind === 'folder' ? `data-drop-folder="${item.id}"` : ''}`;
 }
 
 function fileRows() {
   const visible = visibleFiles();
-  if (!visible.length) return `<tr><td colspan="${isArchive() ? 4 : 5}" class="empty-row">${search.trim() ? 'No matching files' : 'No files yet'}</td></tr>`;
-  return visible.map(file => `<tr>${isArchive() ? '' : `<td class="file-selection">${file.canDelete ? `<input type="checkbox" data-select-file="${file.id}" aria-label="Select ${esc(file.name)}" ${selectedFiles.has(file.id) ? 'checked' : ''} ${transfer ? 'disabled' : ''}>` : ''}</td>`}<td><div class="person-cell"><span class="file-glyph">${icon('file', 19)}</span><div><strong class="file-name">${esc(file.name)}</strong>${!isVaultPage() ? `<small>${esc(file.by)}</small>` : ''}</div></div></td>
-    <td>${formatSize(file.size)}</td><td>${formatDate(file.created)}</td><td class="file-actions"><button class="icon-button" data-action="download" data-id="${file.id}" title="Download" aria-label="Download ${esc(file.name)}" ${file.damaged || transfer ? 'disabled' : ''}>${icon('download', 19)}</button>
-    ${file.canDelete && !file.damaged ? `<button class="icon-button" data-action="rename" data-id="${file.id}" title="Rename" aria-label="Rename ${esc(file.name)}" ${transfer ? 'disabled' : ''}>${icon('edit', 18)}</button>` : ''}
-    ${file.canDelete ? `<button class="icon-button danger-icon" data-action="remove" data-id="${file.id}" title="Delete" aria-label="Delete ${esc(file.name)}" ${transfer ? 'disabled' : ''}>${icon('trash', 18)}</button>` : ''}</td></tr>`).join('');
+  const added = item => formatDate(item.trashed || item.created);
+  if (gridView) return visible.map(item => `<article class="file-card" ${dragAttributes(item)}>
+    <div class="file-card-tools">${itemCheckbox(item)}<div>${itemButtons(item)}</div></div>
+    ${itemName(item)}<small>${item.kind === 'folder' ? 'Folder' : formatSize(item.size)} · ${added(item)}</small>${itemLocation(item)}</article>`).join('');
+  return visible.map(item => `<tr ${dragAttributes(item)}>${isArchive() ? '' : `<td class="file-selection">${itemCheckbox(item)}</td>`}
+    <td>${itemName(item)}${itemLocation(item) || (!isVaultPage() ? `<small class="item-owner">${esc(item.by)}</small>` : '')}</td>
+    <td>${item.kind === 'folder' ? '—' : formatSize(item.size)}</td><td>${added(item)}</td><td class="file-actions">${itemButtons(item)}</td></tr>`).join('');
+}
+
+function folderPath(id) {
+  const byId = new Map(folders.map(folder => [folder.id, folder]));
+  const path = [];
+  while (byId.has(id)) {
+    const folder = byId.get(id);
+    byId.delete(id);
+    path.unshift(folder);
+    id = folder.folderId;
+  }
+  return path;
+}
+
+function folderBreadcrumbs() {
+  if (fileView !== 'browse') return '';
+  const path = folderPath(folderId);
+  return `<nav class="folder-path" aria-label="Folder path">
+    <button class="button text-button" data-action="folder-root">${esc(workspaceName())}</button>
+    ${path.map(folder => `${icon('chevron', 14)}<button class="button text-button" data-action="open-folder" data-id="${itemKey(folder)}">${esc(folder.name)}</button>`).join('')}
+  </nav>`;
 }
 
 function fileTable() {
-  return `<section class="panel files-panel"><div class="panel-heading"><div><h2>Files</h2><p>${files.length} ${files.length === 1 ? 'file' : 'files'}</p></div><div class="file-tools">
-    <label class="search">${icon('search', 17)}<span class="visually-hidden">Search files</span><input id="search" type="search" placeholder="Search files" value="${esc(search)}"></label>
-    <select id="file-sort" aria-label="Sort files">${Object.entries(fileSorts).map(([key, [label]]) => `<option value="${key}" ${key === fileSort ? 'selected' : ''}>${label}</option>`).join('')}</select>
-    ${isArchive() ? '' : '<button id="delete-selected" class="button secondary" data-action="remove-selected" hidden></button>'}</div></div>
-    <div class="table-scroll"><table><thead><tr>${isArchive() ? '' : '<th class="file-selection"><input type="checkbox" id="select-visible" aria-label="Select all eligible files shown"></th>'}<th>Name</th><th>Size</th><th>Added</th><th><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="rows">${fileRows()}</tbody></table></div></section>`;
+  const views = [['browse', 'Browse', 'folder'], ['recent', 'Recent', 'clock'], ['starred', 'Starred', 'star'], ['trash', 'Trash', 'trash']];
+  return `<section class="panel files-panel" id="file-workspace">
+    ${isArchive() ? '' : `<nav class="file-views" aria-label="File views">${views.map(([value, label, symbol]) => `<button class="button file-view ${value === fileView ? 'current' : ''}" data-action="file-view" data-id="${value}" aria-pressed="${value === fileView}" ${transfer ? 'disabled' : ''}>${icon(symbol, 17)}${label}</button>`).join('')}</nav>`}
+    <div class="panel-heading file-heading">${folderBreadcrumbs()}<div class="file-tools">
+    <label class="search">${icon('search', 17)}<span class="visually-hidden">Search this space</span><input id="search" type="search" placeholder="Search this space" value="${esc(search)}"></label>
+    <select id="file-sort" aria-label="Sort items" ${fileView === 'recent' ? 'disabled' : ''}>${Object.entries(fileSorts).map(([key, [label]]) => `<option value="${key}" ${key === fileSort ? 'selected' : ''}>${label}</option>`).join('')}</select>
+    <button class="icon-button layout-toggle" data-action="toggle-grid" title="${gridView ? 'List view' : 'Grid view'}" aria-label="${gridView ? 'Switch to list view' : 'Switch to grid view'}">${icon(gridView ? 'list' : 'overview', 18)}</button></div></div>
+    ${isArchive() ? '' : `<div id="selection-tools" class="selection-tools" hidden><strong id="selection-count"></strong>
+      ${fileView === 'trash' ? '<button class="button secondary" data-action="restore-selected">Restore</button><button class="button danger" data-action="purge-selected">Delete forever</button>' :
+       '<button class="button secondary" data-action="move-selected">Move</button><button class="button secondary" data-action="remove-selected">Move to Trash</button>'}</div>`}
+    <div id="files-empty" class="files-empty" hidden>${icon(fileView === 'trash' ? 'trash' : fileView === 'starred' ? 'star' : 'folder', 26)}<strong></strong><small></small></div>
+    ${gridView ? `${isArchive() ? '' : '<label class="grid-select"><input type="checkbox" id="select-visible"> Select visible items</label>'}<div class="file-grid" id="rows">${fileRows()}</div>` :
+      `<div class="table-scroll"><table><thead><tr>${isArchive() ? '' : '<th class="file-selection"><input type="checkbox" id="select-visible" aria-label="Select all eligible items shown"></th>'}<th>Name</th><th>Size</th><th>${fileView === 'trash' ? 'Removed' : 'Added'}</th><th><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="rows">${fileRows()}</tbody></table></div>`}
+    </section>`;
 }
 
 function updateFileSelection() {
@@ -285,10 +379,25 @@ function updateFileSelection() {
   selectAll.disabled = Boolean(transfer) || !checkboxes.length;
   selectAll.checked = count > 0 && count === checkboxes.length;
   selectAll.indeterminate = count > 0 && count < checkboxes.length;
-  const remove = document.querySelector('#delete-selected');
-  remove.hidden = !count;
-  remove.disabled = Boolean(transfer);
-  remove.textContent = `Delete selected (${count})`;
+  const tools = document.querySelector('#selection-tools');
+  tools.hidden = !count;
+  tools.querySelectorAll('button').forEach(button => { button.disabled = Boolean(transfer); });
+  document.querySelector('#selection-count').textContent = `${count} selected`;
+}
+
+function updateEmptyState() {
+  const element = document.querySelector('#files-empty');
+  if (!element) return;
+  element.hidden = Boolean(document.querySelector('#rows').children.length);
+  const messages = {
+    browse: ['This folder is empty', isArchive() ? '' : 'Upload files or create a folder to get started.'],
+    recent: ['No recent files', 'Uploaded files appear here.'],
+    starred: ['Nothing starred yet', 'Use the star beside a file or folder to keep it handy.'],
+    trash: ['Trash is empty', 'Items you remove appear here until restored or permanently deleted.'],
+  };
+  const [title, description] = search.trim() ? ['No matching items', 'Try a different search.'] : messages[fileView];
+  element.querySelector('strong').textContent = title;
+  element.querySelector('small').textContent = description;
 }
 
 function transferBar() {
@@ -305,7 +414,7 @@ function workspaceName() {
 function archiveList() {
   if (!data.archives.length) return '';
   return `<section class="panel exchange-list archived-list"><div class="archive-heading"><div><h2>Archived vaults</h2><p>These encrypted files count toward your storage quota.</p></div></div>
-    ${data.archives.map(item => `<div><div class="person-cell"><span class="file-glyph">${icon('lock', 18)}</span><div><strong>${formatDate(item.created)}</strong><small>${item.fileCount} ${item.fileCount === 1 ? 'file' : 'files'}</small></div></div><button class="button secondary" data-page="archive:${item.id}">Open archive</button></div>`).join('')}</section>`;
+    ${data.archives.map(item => `<div><div class="person-cell"><span class="file-glyph">${icon('lock', 18)}</span><div><strong>${formatDate(item.created)}</strong><small>${item.fileCount} ${item.fileCount === 1 ? 'file' : 'files'} · ${item.folderCount} ${item.folderCount === 1 ? 'folder' : 'folders'}</small></div></div><button class="button secondary" data-page="archive:${item.id}">Open archive</button></div>`).join('')}</section>`;
 }
 
 function workspace() {
@@ -319,8 +428,10 @@ function workspace() {
     return `${pageTitle(name, 'Choose a guest to open the folder you share with them.')}
       <section class="panel exchange-list">${data.people.filter(person => person.role === 'guest').map(person => `<div><div class="person-cell">${avatar(person)}<div><strong>${esc(person.name)}</strong><small>${person.exchange ? 'Guest access enabled' : 'Guest access disabled'}</small></div></div><button class="button secondary" data-page="exchange:${person.id}">Open folder ${icon('chevron', 15)}</button></div>`).join('')}</section>`;
   }
-  const description = archive ? 'Open these files with the passphrase or recovery key for this archived vault.' : privateSpace ? 'Your browser encrypts your personal files before upload.' : familySpace ? 'Files here are shared with everyone in the family.' : target ? `Files shared between the admin and ${esc(target.name)}.` : 'Files shared between you and the admin.';
-  const actions = archive || (privateSpace && !vaultKey) ? '' : `<button class="button primary" data-action="upload" ${transfer ? 'disabled' : ''}>${icon('upload', 19)} Upload files</button><input type="file" id="file-picker" multiple hidden>`;
+  const description = archive ? 'Open these files with the passphrase or recovery key for this archived vault.' : privateSpace ? 'Your browser encrypts your personal files before upload.' : familySpace ? 'Shared files for family members with access.' : target ? `Files shared between the admin and ${esc(target.name)}.` : 'Files shared between you and the admin.';
+  const actions = archive || fileView !== 'browse' || (privateSpace && !vaultKey) ? '' : `<button class="button secondary" data-action="new-folder" ${transfer ? 'disabled' : ''}>${icon('folder', 19)} New folder</button>
+    <button class="button primary" data-action="upload" ${transfer ? 'disabled' : ''}>${icon('upload', 19)} Upload files</button><input type="file" id="file-picker" multiple hidden>
+    <button class="button secondary" data-action="upload-folder" ${transfer ? 'disabled' : ''}>${icon('upload', 18)} Upload folder</button><input type="file" id="folder-picker" webkitdirectory multiple hidden>`;
   const lockButton = privateSpace && vaultKey ? `<button class="button secondary" data-action="lock" ${transfer ? 'disabled' : ''}>${icon('lock', 17)} Lock vault</button>` : '';
   const security = page === 'private' && vaultKey ? `<button class="button secondary" data-action="vault-security" ${transfer ? 'disabled' : ''}>${icon('settings', 18)} Vault security</button>` : '';
   const back = archive ? '<button class="button secondary" data-page="private">Back to My files</button>' : '';
@@ -346,6 +457,7 @@ function render() {
     selectedFiles.clear();
     document.querySelector('#rows').innerHTML = page === 'overview' || page === 'people' ? personRows() : fileRows();
     updateFileSelection();
+    updateEmptyState();
   });
   document.querySelector('#file-sort')?.addEventListener('change', event => {
     fileSort = event.target.value;
@@ -368,8 +480,12 @@ function render() {
     updateFileSelection();
   });
   updateFileSelection();
+  updateEmptyState();
   document.querySelector('#file-picker')?.addEventListener('change', event => {
     if (event.target.files.length) guarded(() => upload([...event.target.files]));
+  });
+  document.querySelector('#folder-picker')?.addEventListener('change', event => {
+    if (event.target.files.length) guarded(() => upload([...event.target.files], true));
   });
 }
 
@@ -379,20 +495,33 @@ function space() {
 
 async function loadFiles() {
   files = [];
+  folders = [];
+  trash = [];
+  const token = ++loadToken;
   const currentPage = page;
   const encrypted = isVaultPage();
   const key = vaultKey;
   if (!data.user || ['overview', 'people'].includes(page) || (page === 'exchange' && isAdmin()) || (encrypted && !key)) return;
+  const user = data.user.id;
   const response = await api(`files?space=${encodeURIComponent(space())}`);
-  const loaded = await Promise.all(response.files.map(async file => {
-    if (!encrypted) return { ...file, name: file.label };
+  const decode = async item => {
+    if (!encrypted) return { ...item, name: item.label };
     try {
-      return { ...file, name: await openText(key, file.label, fileContext(data.user.id, file, 'name')) };
+      return { ...item, name: await openText(key, item.label, itemNameContext(user, item)) };
     } catch {
-      return { ...file, name: 'Unreadable encrypted file', damaged: true };
+      return { ...item, name: `Unreadable encrypted ${item.kind}`, damaged: true };
     }
-  }));
-  if (page === currentPage && (!encrypted || vaultKey === key)) files = loaded;
+  };
+  const [nextFiles, nextFolders, nextTrash] = await Promise.all([
+    Promise.all(response.files.map(decode)),
+    Promise.all(response.folders.map(decode)),
+    Promise.all([...response.trashFiles, ...response.trashFolders].map(decode)),
+  ]);
+  if (token !== loadToken || page !== currentPage || data.user?.id !== user || (encrypted && vaultKey !== key)) return;
+  files = nextFiles;
+  folders = nextFolders;
+  trash = nextTrash;
+  if (!folders.some(folder => folder.id === folderId)) folderId = null;
 }
 
 async function refresh() {
@@ -414,9 +543,20 @@ async function navigate(next) {
   }
   if (page !== next && isVaultPage()) clearVaultKey();
   page = next;
+  folderId = null;
+  fileView = 'browse';
   search = '';
   selectedFiles.clear();
   await loadFiles();
+  render();
+}
+
+function openFolder(item) {
+  if (transfer) return;
+  folderId = item?.id ?? null;
+  fileView = 'browse';
+  search = '';
+  selectedFiles.clear();
   render();
 }
 
@@ -527,7 +667,7 @@ const newPassphraseInputs = '<label>New vault passphrase<input name="passphrase"
 
 function showVaultDialog(title, help, body) {
   dialog.innerHTML = `<div class="dialog-head"><h2 id="dialog-title">${title}</h2><button class="icon-button" data-action="close" aria-label="Close">${icon('close')}</button></div>
-    <p class="dialog-help">${help}</p>${body}`;
+    ${help ? `<p class="dialog-help">${help}</p>` : ''}${body}`;
   if (!dialog.open) dialog.showModal();
 }
 
@@ -584,23 +724,25 @@ function vaultDialog() {
 function forgotVault() {
   const vault = data.vault;
   const recover = vault.recoveryWrap ? '<button class="button primary" data-action="vault-recover">Use recovery key</button>' : '';
-  const details = vault.fileCount ? 'Starting fresh moves the existing encrypted files into an archive. You can unlock that archive later with its original credentials.' : 'You can reset this empty vault using your Family Drive sign-in password.';
+  const hasItems = vault.fileCount || vault.folderCount;
+  const details = hasItems ? 'Starting fresh moves the existing encrypted folders and files into an archive. You can unlock that archive later with its original credentials.' : 'You can reset this empty vault using your Family Drive sign-in password.';
   showVaultDialog('Forgot vault passphrase?', details,
-    `<div class="dialog-actions"><button class="button ${recover ? 'secondary' : 'primary'}" data-action="vault-reset">${vault.fileCount ? 'Start fresh and keep archive' : 'Reset empty vault'}</button>${recover}</div>`);
+    `<div class="dialog-actions"><button class="button ${recover ? 'secondary' : 'primary'}" data-action="vault-reset">${hasItems ? 'Start fresh and keep archive' : 'Reset empty vault'}</button>${recover}</div>`);
 }
 
 function resetVaultDialog() {
   const current = data.vault;
-  const help = current.fileCount ? 'Your existing files will move to a locked archive. Enter your sign-in password to continue and create a fresh vault.' : 'Enter your sign-in password to clear the vault settings and choose a new passphrase.';
+  const hasItems = current.fileCount || current.folderCount;
+  const help = hasItems ? 'Your existing folders and files will move to a locked archive. Enter your sign-in password to continue and create a fresh vault.' : 'Enter your sign-in password to clear the vault settings and choose a new passphrase.';
   formDialog('Reset private vault', help,
     '<label>Family Drive sign-in password<input name="password" type="password" autocomplete="current-password" required></label>',
-    current.fileCount ? 'Archive files and reset' : 'Reset vault', async values => {
+    hasItems ? 'Archive and reset' : 'Reset vault', async values => {
       const result = await api('vault/reset', { method: 'POST', data: { password: values.password, revision: current.revision } });
       clearVaultKey();
       dialog.close();
       await refresh();
       await navigate('private');
-      notice(result.archived ? `${result.archived} ${result.archived === 1 ? 'file preserved' : 'files preserved'} in an encrypted archive.` : 'Vault reset. Choose a new vault passphrase.');
+      notice(result.archiveCreated ? 'Saved your items in an encrypted archive.' : 'Vault reset. Choose a new vault passphrase.');
     });
 }
 
@@ -648,9 +790,25 @@ function updateProgress(label, fraction) {
   document.querySelector('#transfer-progress').value = transfer.percent;
 }
 
-async function upload(selected) {
+const newId = () => crypto.randomUUID().replaceAll('-', '');
+const itemNameContext = (user, item) => fileContext(user, item, item.kind === 'folder' ? 'folder-name' : 'name');
+
+async function createFolder(name, parent = folderId) {
+  const item = { id: newId(), kind: 'folder', size: 0, space: space(), folderId: parent, label: name };
+  if (item.space === 'private') {
+    if (!vaultKey) throw new Error('Unlock your vault before creating a folder.');
+    item.revision = data.vault.revision;
+    item.label = await sealText(vaultKey, name, itemNameContext(data.user.id, item));
+  }
+  await api('folders', { method: 'POST', data: item });
+  return item.id;
+}
+
+async function upload(selected, withFolders = false, success = '') {
   if (transfer) return;
   const currentSpace = space();
+  const uploadFolder = folderId;
+  const pathIds = new Map([['', uploadFolder]]);
   const key = currentSpace === 'private' ? vaultKey : null;
   if (currentSpace === 'private' && !key) throw new Error('Unlock your vault first.');
   transfer = { label: 'Preparing upload…', percent: 0 };
@@ -659,12 +817,22 @@ async function upload(selected) {
   const errors = [];
   try {
     for (const local of selected) {
-      const file = { id: crypto.randomUUID().replaceAll('-', ''), size: local.size, space: currentSpace };
+      const file = { id: newId(), size: local.size, space: currentSpace, folderId: uploadFolder };
       if (key) file.revision = data.vault.revision;
       let registered = false;
       const label = `Uploading ${local.name}`;
       updateProgress(label, 0);
       try {
+        if (withFolders) {
+          const parts = local.webkitRelativePath.split('/').slice(0, -1);
+          let path = '';
+          for (const name of parts) {
+            const next = `${path}/${name}`;
+            if (!pathIds.has(next)) pathIds.set(next, await createFolder(name, pathIds.get(path)));
+            path = next;
+          }
+          file.folderId = pathIds.get(path);
+        }
         file.label = key ? await sealText(key, local.name, fileContext(data.user.id, file, 'name')) : local.name;
         await api('uploads', { method: 'POST', data: file });
         registered = true;
@@ -697,7 +865,40 @@ async function upload(selected) {
     }
   }
   if (errors.length) notice(`${done ? `${done} uploaded. ` : ''}${errors[0]}${errors.length > 1 ? ` (${errors.length} failed)` : ''}`, true);
-  else notice(`${done} ${done === 1 ? 'file' : 'files'} uploaded.`);
+  else notice(success || `${done} ${done === 1 ? 'file' : 'files'} uploaded.`);
+}
+
+async function readFileSlice(file, start, end, key, user, chunkSize) {
+  const encrypted = Boolean(key);
+  const index = Math.floor(start / chunkSize);
+  const offset = encrypted ? start + index * overhead : start;
+  const length = end - start + (encrypted ? overhead : 0);
+  if (!length) return new Uint8Array();
+  const response = await fetch(`/api/files/${file.id}/blob`, {
+    headers: { Range: `bytes=${offset}-${offset + length - 1}` },
+    cache: 'no-store',
+  });
+  if (response.status !== 206 || Number(response.headers.get('Content-Length')) !== length) {
+    await response.body?.cancel();
+    throw Object.assign(new Error('Could not read this file. Check access and try again.'), { status: response.status });
+  }
+  const bytes = new Uint8Array(await response.arrayBuffer());
+  if (bytes.length !== length) throw new Error('The file is incomplete.');
+  return encrypted ? open(key, bytes, fileContext(user, file, index)) : bytes;
+}
+
+function copyFile(file) {
+  const { chunkSize } = data;
+  const user = data.user.id;
+  const key = isVaultPage() ? vaultKey : null;
+  const extensionIndex = file.name.lastIndexOf('.');
+  const suffix = extensionIndex > 0 ? file.name.slice(extensionIndex) : '';
+  const stem = extensionIndex > 0 ? file.name.slice(0, extensionIndex) : file.name;
+  const name = `${stem.slice(0, Math.max(0, 250 - suffix.length))} copy${suffix.slice(0, 250)}`;
+  const local = { name, size: file.size, slice: (start, end) => ({
+    arrayBuffer: () => readFileSlice(file, start, end, key, user, chunkSize),
+  }) };
+  return upload([local], false, 'File copied to the open folder.');
 }
 
 async function startDownload(file) {
@@ -723,55 +924,146 @@ async function startDownload(file) {
   }
 }
 
-function confirmDelete(file) {
-  if (!file) return;
-  formDialog('Delete file?', `Delete <strong>${esc(file.name)}</strong> from this drive.`, '<div class="access-banner">This permanently removes the file from Family Drive.</div>', 'Delete file', async () => {
-    await api(`files/${file.id}`, { method: 'DELETE' });
-    dialog.close();
-    await refresh();
-    await loadFiles();
-    render();
-    notice('File deleted.');
-  });
-  dialog.querySelector('button[type="submit"]').classList.replace('primary', 'danger');
+function itemLabel(name) {
+  const label = name.trim();
+  if (!label || /[\x00-\x1f\x7f/\\]/.test(label) || label === '.' || label === '..') throw new Error('Enter a valid name.');
+  return label;
 }
 
-function renameFile(file) {
-  if (!file?.canDelete || file.damaged) return;
-  const form = formDialog('Rename file', '', `<label>Filename<input name="name" value="${esc(file.name)}" maxlength="255" required></label>`,
+function newFolder() {
+  formDialog('New folder', '', '<label>Folder name<input name="name" maxlength="255" required></label>', 'Create folder',
+    async values => {
+      await createFolder(itemLabel(values.name));
+      dialog.close();
+      search = '';
+      await loadFiles();
+      render();
+      notice('Folder created.');
+    });
+}
+
+function renameItem(item) {
+  if (!item?.canDelete || item.damaged) return;
+  const form = formDialog(`Rename ${item.kind}`, '', `<label>Name<input name="name" value="${esc(item.name)}" maxlength="255" required></label>`,
     'Save name', async values => {
-      const name = values.name.trim();
-      if (!name || /[\x00-\x1f\x7f/\\]/.test(name) || name === '.' || name === '..') throw new Error('Enter a valid filename.');
+      const name = itemLabel(values.name);
       const fields = { label: name };
       if (page === 'private') {
         if (!vaultKey) throw new Error('Unlock your vault before renaming.');
         fields.revision = data.vault.revision;
-        fields.label = await sealText(vaultKey, name, fileContext(data.user.id, file, 'name'));
+        fields.label = await sealText(vaultKey, name, itemNameContext(data.user.id, item));
       }
-      await api(`files/${file.id}`, { method: 'PATCH', data: fields });
+      await api(`${item.kind}s/${item.id}`, { method: 'PATCH', data: fields });
       dialog.close();
       await loadFiles();
       render();
-      notice('File renamed.');
+      notice('Name saved.');
     });
   form.elements.name.focus();
   form.elements.name.select();
 }
 
-function confirmBulkDelete() {
-  const ids = visibleFiles().filter(file => file.canDelete && selectedFiles.has(file.id)).map(file => file.id);
-  if (!ids.length) return;
-  const label = ids.length === 1 ? '1 file' : `${ids.length} files`;
-  formDialog(`Delete ${label}?`, 'This permanently removes these files from Family Drive.', '', 'Delete selected', async () => {
-    const result = await api('files/bulk-delete', { method: 'POST', data: { ids } });
-    selectedFiles.clear();
-    dialog.close();
-    await refresh();
-    await loadFiles();
-    render();
-    notice(`${result.deleted} ${result.deleted === 1 ? 'file' : 'files'} deleted.`);
+const selectedItems = () => visibleFiles().filter(item => item.canDelete && selectedFiles.has(itemKey(item)));
+
+async function organize(action, items, fields = {}) {
+  if (!items.length) return;
+  await api(`items/${action}`, {
+    method: 'POST', data: { ...fields, items: items.map(({ kind, id }) => ({ kind, id })) },
   });
-  dialog.querySelector('button[type="submit"]').classList.replace('primary', 'danger');
+  selectedFiles.clear();
+  if (dialog.open) dialog.close();
+  if (action === 'purge') await refresh();
+  await loadFiles();
+  render();
+}
+
+function moveItems(items) {
+  if (!items.length) return;
+  const forbidden = new Set(items.filter(item => item.kind === 'folder').map(item => item.id));
+  const targets = folders.map(folder => folderPath(folder.id))
+    .filter(path => path.every(folder => !forbidden.has(folder.id)))
+    .map(path => ({ id: path.at(-1).id, name: path.map(folder => folder.name).join(' / ') }))
+    .sort((a, b) => a.name.localeCompare(b.name));
+  formDialog('Move items', '', `<label>Destination<select name="folder"><option value="">${esc(workspaceName())} (top level)</option>
+    ${targets.map(target => `<option value="${target.id}">${esc(target.name)}</option>`).join('')}</select></label>`, 'Move here', async values => {
+    await organize('move', items, { folderId: values.folder || null });
+    notice('Items moved.');
+  });
+}
+
+function confirmRemoval(items, permanent) {
+  if (!items.length) return;
+  const name = items.length === 1 ? esc(items[0].name) : `${items.length} items`;
+  const title = permanent ? 'Delete forever' : 'Move to Trash';
+  formDialog(`${title}?`, `<strong>${name}</strong>`, permanent
+    ? '<p>This permanently deletes the selection, including the contents of selected folders.</p>'
+    : '<p>You can restore these items from Trash. They still count toward storage usage until deleted forever.</p>',
+  title, async () => {
+    await organize(permanent ? 'purge' : 'trash', items);
+    notice(permanent ? 'Items permanently deleted.' : 'Moved to Trash.');
+  });
+  if (permanent) dialog.querySelector('button[type="submit"]').classList.replace('primary', 'danger');
+}
+
+function itemMenu(item) {
+  if (!item) return;
+  const button = (action, label, symbol) => `<button class="button secondary" data-action="${action}" data-id="${itemKey(item)}">${icon(symbol, 18)}${label}</button>`;
+  const file = item.kind === 'file' && !item.damaged;
+  const activeActions = (file ? button('download', 'Download', 'download') : '') +
+    (file && !isArchive() ? button('copy-file', 'Copy to open folder', 'copy') : '') +
+    (item.canDelete ? (item.damaged ? '' : button('rename', 'Rename', 'edit')) +
+      button('move-item', 'Move to folder', 'folder') + button('trash-item', 'Move to Trash', 'trash') : '');
+  const actions = item.trashed ? button('restore-item', 'Restore', 'folder') + button('purge-item', 'Delete forever', 'trash') : activeActions;
+  showVaultDialog(esc(item.name), '', `<p class="item-details">${item.kind === 'folder' ? 'Folder' : formatSize(item.size)} · ${formatDate(item.created)}
+    ${!isVaultPage() ? `· Added by ${esc(item.by)}` : ''}</p><div class="item-menu">${actions}</div>`);
+}
+
+function previewKind(name) {
+  const extension = name.split('.').at(-1).toLowerCase();
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp'].includes(extension)) return ['image', `image/${extension === 'jpg' ? 'jpeg' : extension}`];
+  if (['mp3', 'ogg', 'wav'].includes(extension)) return ['audio', `audio/${extension === 'mp3' ? 'mpeg' : extension}`];
+  if (['mp4', 'webm'].includes(extension)) return ['video', `video/${extension}`];
+  if (['txt', 'md', 'csv', 'json', 'log'].includes(extension)) return ['text', 'text/plain'];
+  return [];
+}
+
+async function previewFile(file) {
+  if (!file || file.damaged) return;
+  const [kind, mime] = previewKind(file.name);
+  const limit = (kind === 'text' ? 1 : 24) * 1024 * 1024;
+  const available = Boolean(kind) && file.size <= limit;
+  showVaultDialog(esc(file.name), '', `<div class="preview-file"><div class="preview-content" aria-live="polite">${available ? 'Loading preview…' : 'Download this file to open it.'}</div>
+    <div class="dialog-actions"><button class="button primary" data-action="download" data-id="${itemKey(file)}">${icon('download', 18)} Download</button></div></div>`);
+  if (!available) return;
+  const container = dialog.querySelector('.preview-content');
+  const { chunkSize } = data;
+  const user = data.user.id;
+  const key = isVaultPage() ? vaultKey : null;
+  const parts = [];
+  try {
+    for (let start = 0; start < file.size || (start === 0 && key); start += chunkSize) {
+      if (!container.isConnected || !dialog.open) return;
+      parts.push(await readFileSlice(file, start, Math.min(file.size, start + chunkSize), key, user, chunkSize));
+    }
+    if (!container.isConnected || !dialog.open) return;
+    const blob = new Blob(parts, { type: mime });
+    if (kind === 'text') {
+      const pre = document.createElement('pre');
+      pre.textContent = await blob.text();
+      if (container.isConnected && dialog.open) container.replaceChildren(pre);
+    } else {
+      if (previewUrl) URL.revokeObjectURL(previewUrl);
+      previewUrl = URL.createObjectURL(blob);
+      const media = document.createElement(kind === 'image' ? 'img' : kind);
+      if (kind === 'image') media.alt = file.name;
+      else media.controls = true;
+      media.src = previewUrl;
+      media.addEventListener('error', () => { container.textContent = 'This format could not be previewed. Download the file to open it.'; }, { once: true });
+      container.replaceChildren(media);
+    }
+  } catch {
+    if (container.isConnected && dialog.open) container.textContent = 'Could not preview this file. Check access and try again.';
+  }
 }
 
 function accountSettings() {
@@ -822,10 +1114,41 @@ document.addEventListener('click', event => {
     button.textContent = 'Copied';
   });
   else if (action === 'upload') document.querySelector('#file-picker').click();
-  else if (action === 'download') guarded(() => startDownload(files.find(file => file.id === id)));
-  else if (action === 'rename') renameFile(files.find(file => file.id === id));
-  else if (action === 'remove') confirmDelete(files.find(file => file.id === id));
-  else if (action === 'remove-selected') confirmBulkDelete();
+  else if (action === 'upload-folder') document.querySelector('#folder-picker').click();
+  else if (action === 'new-folder') newFolder();
+  else if (action === 'folder-root') openFolder(null);
+  else if (action === 'open-folder') openFolder(itemByKey(id));
+  else if (action === 'toggle-grid') {
+    gridView = !gridView;
+    localStorage.setItem('family-drive-layout', gridView ? 'grid' : 'list');
+    render();
+    document.querySelector('.layout-toggle')?.focus();
+  } else if (action === 'file-view') {
+    fileView = id;
+    search = '';
+    selectedFiles.clear();
+    render();
+    document.querySelector(`[data-action="file-view"][data-id="${id}"]`)?.focus();
+  } else if (action === 'item-menu') itemMenu(itemByKey(id));
+  else if (action === 'preview-file') guarded(() => previewFile(itemByKey(id)));
+  else if (action === 'download' || action === 'copy-file') {
+    const item = itemByKey(id);
+    if (!item) return;
+    if (dialog.open) dialog.close();
+    guarded(() => action === 'download' ? startDownload(item) : copyFile(item));
+  } else if (action === 'rename') renameItem(itemByKey(id));
+  else if (action === 'move-item' || action === 'move-selected') moveItems(id ? [itemByKey(id)].filter(Boolean) : selectedItems());
+  else if (['trash-item', 'remove-selected', 'purge-item', 'purge-selected'].includes(action)) {
+    confirmRemoval(id ? [itemByKey(id)].filter(Boolean) : selectedItems(), action.startsWith('purge'));
+  } else if (action === 'restore-item' || action === 'restore-selected') {
+    guarded(async () => {
+      await organize('restore', id ? [itemByKey(id)].filter(Boolean) : selectedItems());
+      notice('Items restored.');
+    });
+  } else if (action === 'star-item') {
+    const item = itemByKey(id);
+    if (item) guarded(() => organize('star', [item], { starred: !item.starred }));
+  }
   else if (action === 'lock') {
     clearVaultKey();
     guarded(() => navigate(page));
@@ -850,7 +1173,78 @@ document.addEventListener('click', event => {
   }
 });
 
-dialog.addEventListener('close', () => { if (!dialog.open) dialog.replaceChildren(); });
+dialog.addEventListener('close', () => {
+  if (!dialog.open) {
+    dialog.replaceChildren();
+    if (previewUrl) URL.revokeObjectURL(previewUrl);
+    previewUrl = null;
+  }
+});
+document.addEventListener('contextmenu', event => {
+  const actions = event.target.closest('tr, .file-card')?.querySelector('[data-action="item-menu"]:not(:disabled)');
+  if (!actions) return;
+  event.preventDefault();
+  itemMenu(itemByKey(actions.dataset.id));
+});
+document.addEventListener('dragstart', event => {
+  const key = event.target.closest('[data-drag-item]')?.dataset.dragItem;
+  if (!key) return;
+  draggedItem = itemByKey(key);
+  event.dataTransfer.effectAllowed = 'move';
+  event.dataTransfer.setData('application/x-family-drive-item', key);
+});
+function dropTarget(event) {
+  if (transfer || dialog.open || isArchive()) return null;
+  if (draggedItem) {
+    const folder = event.target.closest('[data-drop-folder]');
+    return folder?.dataset.dropFolder !== draggedItem.id ? folder : null;
+  }
+  if (fileView === 'browse' && event.dataTransfer.types.includes('Files')) return event.target.closest('#file-workspace');
+  return null;
+}
+document.addEventListener('dragover', event => {
+  const target = dropTarget(event);
+  if (!target) return;
+  event.preventDefault();
+  event.dataTransfer.dropEffect = draggedItem ? 'move' : 'copy';
+  if (!target.classList.contains('drop-ready')) {
+    document.querySelector('.drop-ready')?.classList.remove('drop-ready');
+    target.classList.add('drop-ready');
+  }
+});
+document.addEventListener('dragleave', event => {
+  const target = event.target.closest('.drop-ready');
+  if (target && !target.contains(event.relatedTarget)) target.classList.remove('drop-ready');
+});
+document.addEventListener('dragend', () => {
+  draggedItem = null;
+  document.querySelector('.drop-ready')?.classList.remove('drop-ready');
+});
+document.addEventListener('drop', event => {
+  const target = dropTarget(event);
+  if (!target) return;
+  event.preventDefault();
+  target.classList.remove('drop-ready');
+  if (draggedItem) {
+    const item = draggedItem;
+    draggedItem = null;
+    guarded(async () => {
+      await organize('move', [item], { folderId: target.dataset.dropFolder });
+      notice('Item moved.');
+    });
+  } else if (event.dataTransfer.files.length) guarded(() => upload([...event.dataTransfer.files]));
+});
+document.addEventListener('keydown', event => {
+  if (dialog.open || transfer || event.target.closest('input, textarea, select, [contenteditable]')) return;
+  const items = selectedItems();
+  if (event.key === 'F2' && items.length === 1 && fileView !== 'trash') {
+    event.preventDefault();
+    renameItem(items[0]);
+  } else if (event.key === 'Delete' && items.length) {
+    event.preventDefault();
+    confirmRemoval(items, fileView === 'trash');
+  }
+});
 document.addEventListener('pointerdown', vaultActivity, { passive: true });
 document.addEventListener('keydown', vaultActivity);
 document.addEventListener('visibilitychange', checkVaultIdle);

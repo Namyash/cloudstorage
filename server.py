@@ -36,6 +36,11 @@ UPLOAD_AGE = 24 * 60 * 60
 ID = re.compile(r'[a-f0-9]{32}')
 COOKIE = 'family_drive_session'
 DUMMY_SALT = secrets.token_bytes(16)
+ITEM_TABLES = {'file': ('files', 'folder_id'), 'folder': ('folders', 'parent_id')}
+FOLDER_TREE = '''WITH RECURSIVE tree(id) AS (
+    SELECT id FROM folders WHERE id = ?
+    UNION SELECT f.id FROM folders f JOIN tree ON f.parent_id = tree.id
+) '''
 
 SCHEMA = '''
 CREATE TABLE IF NOT EXISTS config (key TEXT PRIMARY KEY, value TEXT NOT NULL);
@@ -61,6 +66,17 @@ CREATE INDEX IF NOT EXISTS files_owner ON files(owner, state);
 CREATE TABLE IF NOT EXISTS vault_archives (
   id TEXT PRIMARY KEY, owner TEXT NOT NULL REFERENCES users(id), created INTEGER NOT NULL,
   salt TEXT NOT NULL, verifier TEXT NOT NULL, vault_wrap TEXT, recovery_wrap TEXT
+);
+CREATE TABLE IF NOT EXISTS folders (
+  id TEXT PRIMARY KEY, owner TEXT NOT NULL REFERENCES users(id), space TEXT NOT NULL,
+  parent_id TEXT REFERENCES folders(id), archive_id TEXT REFERENCES vault_archives(id),
+  label TEXT NOT NULL, created INTEGER NOT NULL, trashed INTEGER
+);
+CREATE INDEX IF NOT EXISTS folders_parent ON folders(parent_id);
+CREATE INDEX IF NOT EXISTS folders_space ON folders(space, archive_id);
+CREATE TABLE IF NOT EXISTS stars (
+  user_id TEXT NOT NULL REFERENCES users(id), kind TEXT NOT NULL, item_id TEXT NOT NULL,
+  PRIMARY KEY (user_id, kind, item_id)
 );
 '''
 
@@ -210,8 +226,14 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             db.execute('ALTER TABLE users ADD COLUMN recovery_wrap TEXT')
         if 'vault_revision' not in user_columns:
             db.execute('ALTER TABLE users ADD COLUMN vault_revision INTEGER NOT NULL DEFAULT 0')
-        if 'archive_id' not in {row['name'] for row in db.execute('PRAGMA table_info(files)')}:
+        file_columns = {row['name'] for row in db.execute('PRAGMA table_info(files)')}
+        if 'archive_id' not in file_columns:
             db.execute('ALTER TABLE files ADD COLUMN archive_id TEXT REFERENCES vault_archives(id)')
+        if 'folder_id' not in file_columns:
+            db.execute('ALTER TABLE files ADD COLUMN folder_id TEXT REFERENCES folders(id)')
+        if 'trashed' not in file_columns:
+            db.execute('ALTER TABLE files ADD COLUMN trashed INTEGER')
+        db.execute('CREATE INDEX IF NOT EXISTS files_folder ON files(folder_id)')
         db.execute("INSERT OR IGNORE INTO config VALUES ('family_quota', '0')")
         needs_setup = not db.execute('SELECT 1 FROM users LIMIT 1').fetchone()
     db.close()
@@ -251,6 +273,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
                 except OSError:
                     continue  # Windows can retain a file while an earlier download is open.
                 db.execute("DELETE FROM files WHERE id = ? AND state = 'removed'", (row['id'],))
+                db.execute("DELETE FROM stars WHERE kind = 'file' AND item_id = ?", (row['id'],))
 
     def expire_uploads():
         connection().execute("UPDATE files SET state = 'removed' WHERE state = 'uploading' AND modified < ?", (now() - UPLOAD_AGE,))
@@ -290,7 +313,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         response.headers.update({
             'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
             'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY',
-            'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+            'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self' data: blob:; media-src blob:; connect-src 'self'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
         })
         return response
 
@@ -487,11 +510,14 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         if user['change_password']:
             return jsonify(result)
         active_files = one("SELECT COUNT(*) AS amount FROM files WHERE owner = ? AND space = 'private' AND state = 'ready' AND archive_id IS NULL", (user['id'],))['amount']
-        archives = connection().execute('''SELECT v.*, COUNT(f.id) AS amount FROM vault_archives AS v
-            JOIN files AS f ON f.archive_id = v.id AND f.owner = v.owner AND f.state = 'ready'
-            WHERE v.owner = ? GROUP BY v.id ORDER BY v.created DESC, v.id''', (user['id'],))
-        result.update(vault=dict(vault_info(user), revision=user['vault_revision'], fileCount=active_files),
-                      archives=[dict(vault_info(row), id=row['id'], created=row['created'], fileCount=row['amount']) for row in archives],
+        active_folders = one("SELECT COUNT(*) AS amount FROM folders WHERE owner = ? AND space = 'private' AND archive_id IS NULL", (user['id'],))['amount']
+        archives = connection().execute('''SELECT v.*,
+            (SELECT COUNT(*) FROM files f WHERE f.archive_id = v.id AND f.owner = v.owner AND f.state = 'ready') AS file_count,
+            (SELECT COUNT(*) FROM folders f WHERE f.archive_id = v.id AND f.owner = v.owner) AS folder_count
+            FROM vault_archives v WHERE v.owner = ? ORDER BY v.created DESC, v.id''', (user['id'],))
+        result.update(vault=dict(vault_info(user), revision=user['vault_revision'], fileCount=active_files, folderCount=active_folders),
+                      archives=[dict(vault_info(row), id=row['id'], created=row['created'],
+                                     fileCount=row['file_count'], folderCount=row['folder_count']) for row in archives],
                       used=usage(owner=user['id']), chunkSize=CHUNK)
         if family_access(user):
             result.update(familyUsed=usage(space='family'), familyQuota=family_quota())
@@ -546,16 +572,19 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             if pending:
                 abort(409, 'Finish or cancel the active private upload before resetting the vault.')
             ready = one("SELECT COUNT(*) AS amount FROM files WHERE owner = ? AND space = 'private' AND state = 'ready' AND archive_id IS NULL", (user['id'],))['amount']
-            if ready:
+            has_folders = one("SELECT 1 FROM folders WHERE owner = ? AND space = 'private' AND archive_id IS NULL", (user['id'],))
+            if ready or has_folders:
                 archive = secrets.token_hex(16)
                 db.execute('INSERT INTO vault_archives VALUES (?, ?, ?, ?, ?, ?, ?)',
                            (archive, user['id'], now(), current['salt'], current['verifier'], current['vault_wrap'], current['recovery_wrap']))
                 db.execute("UPDATE files SET archive_id = ? WHERE owner = ? AND space = 'private' AND state = 'ready' AND archive_id IS NULL",
                            (archive, user['id']))
+                db.execute("UPDATE folders SET archive_id = ? WHERE owner = ? AND space = 'private' AND archive_id IS NULL",
+                           (archive, user['id']))
             db.execute('''UPDATE users SET salt = NULL, verifier = NULL, vault_wrap = NULL, recovery_wrap = NULL,
                           vault_revision = vault_revision + 1 WHERE id = ?''', (user['id'],))
             db.execute('DELETE FROM attempts WHERE key = ?', ('vault-reset:' + user['id'],))
-        return jsonify(ok=True, archived=ready)
+        return jsonify(ok=True, archived=ready, archiveCreated=bool(ready or has_folders))
 
     def allocation_capacity(free):
         claimed = one("SELECT COALESCE(SUM(received), 0) AS amount FROM files WHERE state != 'removed'")['amount']
@@ -657,48 +686,142 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             uid = space.removeprefix('exchange:')
             if user['role'] == 'admin':
                 return bool(one("SELECT 1 FROM users WHERE id = ? AND role = 'guest'", (uid,)))
-            return user['role'] == 'guest' and user['id'] == uid and user['exchange']
+            return user['role'] == 'guest' and user['id'] == uid and bool(one(
+                'SELECT 1 FROM users WHERE id = ? AND active = 1 AND exchange = 1 AND (expires IS NULL OR expires > ?)',
+                (uid, now())))
         return False
 
-    def file_row(fid, ready=True):
+    def folder_lineage(folder_id):
+        return connection().execute('''WITH RECURSIVE ancestry AS (
+            SELECT id, parent_id, trashed FROM folders WHERE id = ?
+            UNION SELECT f.id, f.parent_id, f.trashed FROM folders f JOIN ancestry a ON f.id = a.parent_id
+        ) SELECT * FROM ancestry''', (folder_id,)).fetchall()
+
+    def item_accessible(user, row):
+        if row['space'] == 'private':
+            return row['owner'] == user['id']
+        return can_access(user, row['space'])
+
+    def item_row(kind, item_id, *, uploading=False, in_trash=False):
         user = require_user()
-        if not ID.fullmatch(fid):
-            abort(404, 'File not found.')
-        row = one('SELECT * FROM files WHERE id = ? AND state = ?', (fid, 'ready' if ready else 'uploading'))
-        if not row or (row['space'] == 'private' and row['owner'] != user['id']):
-            abort(404, 'File not found.')
-        if row['space'] != 'private' and not can_access(user, row['space']):
-            abort(404, 'File not found.')
+        if not isinstance(item_id, str) or not ID.fullmatch(item_id):
+            abort(404, 'Item not found.')
+        if kind == 'folder':
+            row = one('SELECT * FROM folders WHERE id = ?', (item_id,))
+        else:
+            row = one('SELECT * FROM files WHERE id = ? AND state = ?', (item_id, 'uploading' if uploading else 'ready'))
+        if not row or not item_accessible(user, row):
+            abort(404, 'Item not found.')
+        if row['archive_id'] is None:
+            parent = row['parent_id'] if kind == 'folder' else row['folder_id']
+            if bool(row['trashed']) != in_trash or (parent and any(node['trashed'] for node in folder_lineage(parent))):
+                abort(404, 'Item not found.')
+        elif in_trash:
+            abort(404, 'Item not found.')
         return row
+
+    def file_row(fid, ready=True):
+        return item_row('file', fid, uploading=not ready)
 
     def can_manage_file(user, row):
         return row['archive_id'] is None and (row['owner'] == user['id'] or user['role'] == 'admin')
 
-    def managed_file(fid):
-        row = file_row(fid)
+    def managed_item(kind, item_id, *, in_trash=False):
+        row = item_row(kind, item_id, in_trash=in_trash)
         if row['archive_id'] is not None:
             abort(409, 'Archived files are read-only.')
         if not can_manage_file(g.user, row):
             abort(403, 'Only the uploader or admin can manage this shared file.')
         return row
 
+    def managed_file(fid):
+        return managed_item('file', fid)
+
+    def verify_vault_revision(user, revision):
+        current = one('SELECT salt, vault_revision FROM users WHERE id = ?', (user['id'],))
+        if not current['salt'] or type(revision) is not int or revision != current['vault_revision']:
+            abort(409, 'The vault changed. Reload and unlock it before continuing.')
+
+    def destination(space, folder_id):
+        user = require_user()
+        if space != 'private' and not can_access(user, space):
+            abort(404, 'Space not found.')
+        if folder_id is None:
+            return None
+        row = item_row('folder', folder_id)
+        if row['space'] != space or row['archive_id'] is not None:
+            abort(404, 'Destination folder not found in this space.')
+        return row['id']
+
     @app.get('/api/files')
     def list_files():
         user = require_user()
         space = request.args.get('space', 'private')
-        if space == 'private':
-            rows = connection().execute("SELECT f.*, u.name FROM files AS f JOIN users AS u ON u.id=f.owner WHERE state = 'ready' AND space = 'private' AND owner = ? AND archive_id IS NULL ORDER BY f.created DESC", (user['id'],))
-        elif space.startswith('archive:'):
+        archive = None
+        if space.startswith('archive:'):
             archive = space.removeprefix('archive:')
             if not ID.fullmatch(archive) or not one('SELECT 1 FROM vault_archives WHERE id = ? AND owner = ?', (archive, user['id'])):
                 abort(404, 'Archived vault not found.')
-            rows = connection().execute("SELECT f.*, u.name FROM files AS f JOIN users AS u ON u.id=f.owner WHERE state = 'ready' AND space = 'private' AND owner = ? AND archive_id = ? ORDER BY f.created DESC", (user['id'], archive))
+            space = 'private'
+        if space == 'private':
+            scope, params = 'f.space = ? AND f.owner = ? AND f.archive_id IS ?', (space, user['id'], archive)
         elif can_access(user, space):
-            rows = connection().execute("SELECT f.*, u.name FROM files AS f JOIN users AS u ON u.id=f.owner WHERE state = 'ready' AND space = ? ORDER BY f.created DESC", (space,))
+            scope, params = 'f.space = ?', (space,)
         else:
             abort(404, 'Space not found.')
-        return jsonify(files=[{'id': row['id'], 'label': row['label'], 'size': row['size'], 'created': row['created'],
-                               'by': row['name'], 'canDelete': can_manage_file(user, row)} for row in rows])
+        db = connection()
+        db.execute('BEGIN')
+        folders = db.execute(f'SELECT f.*, u.name FROM folders f JOIN users u ON u.id=f.owner WHERE {scope}', params).fetchall()
+        files = db.execute(f"""SELECT f.*, u.name FROM files f JOIN users u ON u.id=f.owner
+                               WHERE f.state = 'ready' AND {scope} ORDER BY f.created DESC""", params).fetchall()
+        stars = {(r['kind'], r['item_id']) for r in db.execute(
+            'SELECT kind, item_id FROM stars WHERE user_id = ?', (user['id'],))}
+        db.commit()
+        children = {}
+        for row in folders:
+            children.setdefault(row['parent_id'], []).append(row['id'])
+        hidden_folders = set()
+        pending = [] if archive else [row['id'] for row in folders if row['trashed']]
+        while pending:
+            folder_id = pending.pop()
+            if folder_id not in hidden_folders:
+                hidden_folders.add(folder_id)
+                pending.extend(children.get(folder_id, ()))
+        result = dict(files=[], folders=[], trashFiles=[], trashFolders=[])
+        for kind, rows, parent_column, active_key, trash_key in (
+                ('folder', folders, 'parent_id', 'folders', 'trashFolders'),
+                ('file', files, 'folder_id', 'files', 'trashFiles')):
+            for row in rows:
+                parent = row[parent_column]
+                if parent in hidden_folders:
+                    continue
+                trashed = row['trashed'] if not archive else None
+                manage = can_manage_file(user, row)
+                if trashed and not manage:
+                    continue
+                entry = dict(id=row['id'], label=row['label'], kind=kind, folderId=parent,
+                             size=row['size'] if kind == 'file' else 0, created=row['created'],
+                             by=row['name'], canDelete=manage, starred=(kind, row['id']) in stars,
+                             trashed=trashed)
+                result[trash_key if trashed else active_key].append(entry)
+        return jsonify(result)
+
+    @app.post('/api/folders')
+    def create_folder():
+        user = require_user()
+        data = json_body()
+        folder_id, space = data.get('id'), data.get('space')
+        if not isinstance(folder_id, str) or not ID.fullmatch(folder_id):
+            abort(400, 'Invalid folder identifier.')
+        with write() as db:
+            parent = destination(space, data.get('folderId'))
+            if space == 'private':
+                verify_vault_revision(user, data.get('revision'))
+            if one('SELECT 1 FROM folders WHERE id = ?', (folder_id,)):
+                abort(409, 'This folder already exists.')
+            db.execute('INSERT INTO folders (id, owner, space, parent_id, label, created) VALUES (?, ?, ?, ?, ?, ?)',
+                       (folder_id, user['id'], space, parent, file_label(space, data.get('label')), now()))
+        return jsonify(id=folder_id), 201
 
     @app.post('/api/uploads')
     def create_upload():
@@ -716,11 +839,10 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         expire_uploads()
         with write() as db:
             # Read the latest quota under the same lock that reserves the space.
-            if space == 'family' and not can_access(user, space):
-                abort(404, 'Space not found.')
-            current = one('SELECT quota, salt, vault_revision FROM users WHERE id = ?', (user['id'],))
-            if space == 'private' and (not current['salt'] or type(data.get('revision')) is not int or data['revision'] != current['vault_revision']):
-                abort(409, 'The vault changed. Reload and unlock it before uploading.')
+            parent = destination(space, data.get('folderId'))
+            current = one('SELECT quota FROM users WHERE id = ?', (user['id'],))
+            if space == 'private':
+                verify_vault_revision(user, data.get('revision'))
             quota = family_quota() if space == 'family' else current['quota']
             used = usage(space='family', reserved=True) if space == 'family' else usage(owner=user['id'], reserved=True)
             if quota == 0 or used + stored > quota:
@@ -733,8 +855,8 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             with (objects / fid).open('xb'):
                 pass
             try:
-                db.execute("INSERT INTO files (id, owner, space, label, size, stored, received, state, created, modified) VALUES (?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
-                           (fid, user['id'], space, label, size, stored, 'ready' if stored == 0 else 'uploading', now(), now()))
+                db.execute("INSERT INTO files (id, owner, space, folder_id, label, size, stored, received, state, created, modified) VALUES (?, ?, ?, ?, ?, ?, ?, 0, ?, ?, ?)",
+                           (fid, user['id'], space, parent, label, size, stored, 'ready' if stored == 0 else 'uploading', now(), now()))
             except BaseException:
                 (objects / fid).unlink(missing_ok=True)
                 raise
@@ -789,16 +911,17 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             abort(404, 'The file is missing from the drive.')
 
     @app.patch('/api/files/<fid>')
-    def rename_file(fid):
+    @app.patch('/api/folders/<fid>')
+    def rename_item(fid):
         data = json_body()
+        kind = 'folder' if request.path.startswith('/api/folders/') else 'file'
+        table, _ = ITEM_TABLES[kind]
         with write() as db:
-            row = managed_file(fid)
+            row = managed_item(kind, fid)
             label = file_label(row['space'], data.get('label'))
             if row['space'] == 'private':
-                current = one('SELECT vault_revision FROM users WHERE id = ?', (g.user['id'],))
-                if type(data.get('revision')) is not int or data['revision'] != current['vault_revision']:
-                    abort(409, 'The vault changed. Reload and unlock it before renaming.')
-            db.execute('UPDATE files SET label = ?, modified = ? WHERE id = ?', (label, now(), fid))
+                verify_vault_revision(g.user, data.get('revision'))
+            db.execute(f'UPDATE {table} SET label = ? WHERE id = ?', (label, fid))
         return jsonify(ok=True)
 
     def remove_files(ids):
@@ -822,6 +945,90 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         unique_ids = list(dict.fromkeys(ids))
         remove_files(unique_ids)
         return jsonify(ok=True, deleted=len(unique_ids))
+
+    def check_folder_removal(folder_id):
+        if one(FOLDER_TREE + """SELECT 1 FROM files WHERE folder_id IN (SELECT id FROM tree)
+                                 AND state = 'uploading' LIMIT 1""", (folder_id,)):
+            abort(409, 'Finish the uploads in this folder before removing it.')
+        if g.user['role'] != 'admin' and one(FOLDER_TREE + '''
+                SELECT 1 FROM folders WHERE id IN (SELECT id FROM tree) AND owner <> ?
+                UNION ALL SELECT 1 FROM files WHERE folder_id IN (SELECT id FROM tree)
+                    AND state = 'ready' AND owner <> ? LIMIT 1''', (folder_id, g.user['id'], g.user['id'])):
+            abort(403, 'Only an admin can remove a folder containing other people’s items.')
+
+    def purge_item(db, kind, item_id):
+        if kind == 'file':
+            db.execute("UPDATE files SET state = 'removed' WHERE id = ?", (item_id,))
+            return
+        db.execute(FOLDER_TREE + """UPDATE files SET state = 'removed', folder_id = NULL
+                                     WHERE folder_id IN (SELECT id FROM tree)""", (item_id,))
+        db.execute(FOLDER_TREE + """DELETE FROM stars WHERE kind = 'folder' AND item_id IN (SELECT id FROM tree)""", (item_id,))
+        db.execute(FOLDER_TREE + 'DELETE FROM folders WHERE id IN (SELECT id FROM tree)', (item_id,))
+
+    @app.post('/api/items/<action>')
+    def organize_items(action):
+        user = require_user()
+        if action not in {'move', 'trash', 'restore', 'purge', 'star'}:
+            abort(404)
+        data = json_body()
+        items = data.get('items')
+        if not isinstance(items, list) or not 1 <= len(items) <= 200:
+            abort(400, 'Select between 1 and 200 items.')
+        keys = {}
+        for item in items:
+            if not isinstance(item, dict):
+                abort(400, 'Invalid item.')
+            kind, item_id = item.get('kind'), item.get('id')
+            if not isinstance(kind, str) or kind not in ITEM_TABLES or not isinstance(item_id, str) or not ID.fullmatch(item_id):
+                abort(400, 'Invalid item.')
+            keys[(kind, item_id)] = None
+        with write() as db:
+            if action == 'star':
+                starred = data.get('starred')
+                if type(starred) is not bool:
+                    abort(400, 'Choose whether to star these items.')
+                for kind, item_id in keys:
+                    item_row(kind, item_id)
+                    if starred:
+                        db.execute('INSERT OR IGNORE INTO stars VALUES (?, ?, ?)', (user['id'], kind, item_id))
+                    else:
+                        db.execute('DELETE FROM stars WHERE user_id = ? AND kind = ? AND item_id = ?',
+                                   (user['id'], kind, item_id))
+                return jsonify(ok=True)
+
+            rows = [(kind, managed_item(kind, item_id, in_trash=action in {'restore', 'purge'}))
+                    for kind, item_id in keys]
+            if action in {'move', 'trash'}:
+                selected_folders = {row['id'] for kind, row in rows if kind == 'folder'}
+                if selected_folders:
+                    rows = [(kind, row) for kind, row in rows if not any(
+                        node['id'] in selected_folders
+                        for node in folder_lineage(row[ITEM_TABLES[kind][1]]))]
+            if action == 'move':
+                space = rows[0][1]['space']
+                if any(row['space'] != space for _, row in rows):
+                    abort(400, 'Choose items from the same space.')
+                target = destination(space, data.get('folderId'))
+                ancestry = {node['id'] for node in folder_lineage(target)} if target else set()
+                if any(kind == 'folder' and row['id'] in ancestry for kind, row in rows):
+                    abort(409, 'A folder cannot be moved into itself or a subfolder.')
+            elif action in {'trash', 'purge'}:
+                for kind, row in rows:
+                    if kind == 'folder':
+                        check_folder_removal(row['id'])
+            stamp = now()
+            for kind, row in rows:
+                table, parent_column = ITEM_TABLES[kind]
+                if action == 'move':
+                    db.execute(f'UPDATE {table} SET {parent_column} = ? WHERE id = ?', (target, row['id']))
+                elif action == 'purge':
+                    purge_item(db, kind, row['id'])
+                else:
+                    db.execute(f'UPDATE {table} SET trashed = ? WHERE id = ?',
+                               (stamp if action == 'trash' else None, row['id']))
+        if action == 'purge':
+            clean_removed()
+        return jsonify(ok=True)
 
     return app
 

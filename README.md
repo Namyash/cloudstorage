@@ -7,7 +7,7 @@ Family Drive is a browser-based file server for a drive connected to your home c
 With Python 3.10 or newer, install the wheel supplied with the release. Then run Family Drive and open `http://127.0.0.1:8765/`.
 
 ```powershell
-py -3 -m pip install .\family_drive-0.1.4-py3-none-any.whl
+py -3 -m pip install .\family_drive-0.2.0-py3-none-any.whl
 py -3 -m family_drive
 ```
 
@@ -41,9 +41,11 @@ For private downloads over 256 MiB, use a desktop browser that supports the file
 
 ## Manage files
 
-Search or sort file lists by name, upload date, or size. Use the pencil next to a file to rename it. In **My files**, the browser encrypts the new name before saving it. In **Family space** and **Guest exchange**, the uploader or admin can rename or delete shared files they can access.
-
-Use the checkbox next to each file, or the checkbox in the table header to select every eligible file in the current search results. Choose **Delete selected** and confirm the deletion. Archived vaults support searching, sorting, and downloading.
+- **Organize.** Select **New folder**, then open the folder to create subfolders. Use the path above the list to go back. Upload files or a folder from the toolbar, or drop files from your computer into the browser. Folder upload keeps the structure of the selected files.
+- **Find.** Switch between list and grid views, search the current space, or sort by name, upload date, or size. **Recent** shows files by upload date. **Starred** shows favorites for the signed-in account.
+- **Manage.** Use **More actions** to rename, move, copy, or download an item where applicable. To move several items, select them and choose **Move**. You can also drag a file or folder onto another folder within the same space. Select a filename to preview supported images, text, audio, and video. Other formats can be downloaded.
+- **Recover.** **Move to Trash** removes an item from the active view and keeps its storage allocated. Open **Trash** to restore an item or choose **Delete forever** to reclaim its space. Deleting a folder forever also removes its contents.
+- **Access.** In **My files**, the browser encrypts folder names, filenames, and the file contents. In **Family space** and **Guest exchange**, the owner or admin manages an item. An admin is required to trash or permanently delete a folder containing other people's items. Moves and copies stay within the current space. Archived vaults can be browsed and downloaded.
 
 ## Recover or reset a private vault
 
