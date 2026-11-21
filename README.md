@@ -1,17 +1,17 @@
-# Family Drive
+# SpareDrive
 
-Family Drive is a browser-based file server for a drive connected to your home computer. The same website gives the admin a storage and account dashboard and each family member or guest their own file area.
+SpareDrive is a browser-based file server for a drive connected to your home computer. The same website gives the admin a storage and account dashboard and each family member or guest their own file area.
 
 ## Install the Windows package
 
-With Python 3.10 or newer, install the wheel supplied with the release. Then run Family Drive and open `http://127.0.0.1:8765/`.
+With Python 3.10 or newer, install the wheel supplied with the release. Then run SpareDrive and open `http://127.0.0.1:8765/`.
 
 ```powershell
 py -3 -m pip install .\family_drive-0.2.1-py3-none-any.whl
 py -3 -m family_drive
 ```
 
-The installed package also provides the `family-drive` command. It keeps host settings in `%LOCALAPPDATA%\FamilyDrive\host.json`. The database and file objects go in the storage folder chosen in the browser. The code in the terminal unlocks first-run storage selection and creates the first admin account.
+The installed package also provides the `sparedrive` command. The existing `family-drive` command is also supported. It keeps host settings in `%LOCALAPPDATA%\FamilyDrive\host.json`. The database and file objects go in the storage folder chosen in the browser. The code in the terminal unlocks first-run storage selection and creates the first admin account.
 
 ## Start on Windows
 
@@ -25,7 +25,7 @@ The launcher saves the selected path and storage identity in `.runtime/host.json
 
 ## Change the active drive or folder
 
-On the host computer, sign in as the admin and open **Storage explorer → Change storage location**. Browse to the destination and enter a new folder name and your admin sign-in password. Family Drive pauses household requests while it copies the database and files, verifies the copied data, and activates the destination. Both drives need to remain connected until the move finishes. The old folder stays on its original drive as a backup. The destination needs enough space for the existing files and assigned quotas. Each household uses one active storage folder.
+On the host computer, sign in as the admin and open **Storage explorer → Change storage location**. Browse to the destination and enter a new folder name and your admin sign-in password. SpareDrive pauses household requests while it copies the database and files, verifies the copied data, and activates the destination. Both drives need to remain connected until the move finishes. The old folder stays on its original drive as a backup. The destination needs enough space for the existing files and assigned quotas. Each household uses one active storage folder.
 
 ## Storage and access
 
@@ -35,7 +35,7 @@ On the host computer, sign in as the admin and open **Storage explorer → Chang
 - **Storage limits.** Quotas are in decimal GB. The server reserves space when an upload begins, checks available disk space, and keeps 512 MiB of free disk headroom. Each account can own up to 25,000 files and folders across all spaces, including items in Trash and archived vaults. Private files use a small amount of extra space for encryption. Stale uploads are cleared after 24 hours at startup or when the next upload begins.
 - **Drive usage.** The overview shows the storage folder, actual free disk space, total assigned quotas, and the amount you can still allocate. Each household runs its own instance and uses the drive it chooses.
 
-Shared files are stored as ordinary files and protected by account permissions. Private file names and contents are encrypted, while the server has access to account names, file sizes, and timestamps. Trust the host and the website code it serves. Someone who controls that code could replace it to capture passphrases in future sessions. Keep the host and its dependencies updated. Use a separate offline backup of the whole data folder, including the SQLite database and `.family-drive-id`. Stop Family Drive while making a filesystem copy of the data folder, and test a restore before relying on the drive for your only copy.
+Shared files are stored as ordinary files and protected by account permissions. Private file names and contents are encrypted, while the server has access to account names, file sizes, and timestamps. Trust the host and the website code it serves. Someone who controls that code could replace it to capture passphrases in future sessions. Keep the host and its dependencies updated. Use a separate offline backup of the whole data folder, including the SQLite database and `.family-drive-id`. Stop SpareDrive while making a filesystem copy of the data folder, and test a restore before relying on the drive for your only copy.
 
 For private downloads over 256 MiB, use a desktop browser that supports the file-save picker, such as Chrome or Edge. Smaller private files can download in browsers that support Web Crypto without the picker.
 
@@ -50,7 +50,7 @@ For private downloads over 256 MiB, use a desktop browser that supports the file
 ## Recover or reset a private vault
 
 - From **My files**, choose **Forgot vault passphrase?** and **Use recovery key** if you saved one for this vault. Enter it and choose a new passphrase to keep your files in place. Save the new recovery key shown afterward.
-- To start fresh, select **Start fresh and keep archive** and confirm with your Family Drive sign-in password. The original encrypted files move to **Archived vaults**, where they still count toward your quota. To download them, open the archive using its original passphrase or a recovery key saved for that archive. For an empty vault, the action is **Reset empty vault**.
+- To start fresh, select **Start fresh and keep archive** and confirm with your SpareDrive sign-in password. The original encrypted files move to **Archived vaults**, where they still count toward your quota. To download them, open the archive using its original passphrase or a recovery key saved for that archive. For an empty vault, the action is **Reset empty vault**.
 - With **My files** unlocked, open **Vault security** to change your passphrase or generate a recovery key. This also works for vaults created before recovery keys were available, as long as you know the current vault passphrase.
 
 ## Connect family devices over private HTTPS
@@ -59,19 +59,28 @@ The default launcher listens only on the host computer. For phones and other com
 
 1. Set up Tailscale on the host and approved clients. Review the tailnet access policy so only the intended users can reach the host’s HTTPS service. The default policy can be broader than that.
 2. On the host, start a private proxy with `tailscale serve --bg http://127.0.0.1:8765` and note the HTTPS address it prints. Use Serve with private access.
-3. Stop Family Drive. Add an `httpsUrl` field with the exact HTTPS origin to `.runtime/host.json`. Keep the same `data` and `port` values. Restart the launcher.
+3. Stop SpareDrive. Add an `httpsUrl` field with the exact HTTPS origin to `.runtime/host.json`. Keep the same `data` and `port` values. Restart the launcher.
 4. Open the HTTPS address on an approved device and sign in using the account the admin created. Test a guest account before sharing the address. If you use a different reverse proxy, configure it to preserve the request’s Host header and accept request bodies of at least 5 MiB.
 
 [Tailscale Serve setup](https://tailscale.com/docs/features/tailscale-serve), [Tailscale access grants](https://tailscale.com/docs/features/access-control/grants).
 
 ## Build the package from source
 
-```powershell
-py -3 -m pip install build
-py -3 -m build
+The project separates the browser assets and Python service:
+
+```text
+frontend/   Browser HTML, CSS, and JavaScript
+backend/    Python server, storage discovery, and migrations
+tests/      Account, storage, and file management regression tests
+start.py    Source launcher used by npm run dev
 ```
 
-Run the storage-move regression checks with `py -3 -m unittest discover -s tests` after installing the app dependencies.
+```powershell
+python -m pip install build
+python -m build
+```
+
+Run the regression checks with `python -m unittest discover -s tests` from the project root after installing the app dependencies. The wheel includes the frontend and still launches with `python -m family_drive`.
 
 ## Run with a custom host configuration
 
@@ -79,5 +88,5 @@ Install the Python packages into an environment of your choice, then run the sam
 
 ```powershell
 python -m pip install -r requirements.txt
-python host.py '.runtime/host.json' --port 8765
+python -m backend.host '.runtime/host.json' --port 8765
 ```

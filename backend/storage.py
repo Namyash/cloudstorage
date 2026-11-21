@@ -1,4 +1,4 @@
-"""Validate the location of Family Drive's data on the host computer."""
+"""Validate the location of SpareDrive's data on the host computer."""
 
 import ctypes
 from ctypes import wintypes
@@ -88,7 +88,7 @@ def physical_disks():
 def storage_folder(value, allow_system=False):
     folder = Path(value).expanduser()
     if not folder.is_absolute() or folder == folder.parent:
-        raise ValueError('Choose a full path to a dedicated folder, such as E:\\FamilyDriveData.')
+        raise ValueError('Choose a full path to a dedicated folder, such as E:\\SpareDriveData.')
     target = folder.resolve()
     root = Path(target.anchor)
     if target == root or not root.is_dir():
@@ -112,7 +112,7 @@ def joined_folder(drive, relative, allow_system=False):
         if not part or part.endswith(('.', ' ')) or PureWindowsPath(part).is_reserved() or PureWindowsPath(part).name != part or '\\' in part or ':' in part:
             raise ValueError('Invalid folder path.')
         if (current / '.family-drive-id').is_file():
-            raise PermissionError('This folder contains protected Family Drive data.')
+            raise PermissionError('This folder contains protected SpareDrive data.')
         current /= part
         if current.lstat().st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT:
             raise PermissionError('Linked folders are unavailable in the storage explorer.')
@@ -150,7 +150,7 @@ def selected_folder(drive, relative, new_name, allow_system=False):
     if new_name:
         if (re.search(r'[<>:"/\\|?*\x00-\x1f]', new_name) or new_name.endswith(('.', ' '))
                 or PureWindowsPath(new_name).is_reserved() or (parent / '.family-drive-id').is_file()):
-            raise ValueError('Choose a valid name outside an existing Family Drive folder.')
+            raise ValueError('Choose a valid name outside an existing SpareDrive folder.')
         target = parent / new_name
         if target.exists():
             prefix = f'{relative}/' if relative else ''
@@ -159,7 +159,7 @@ def selected_folder(drive, relative, new_name, allow_system=False):
         target = parent
     target = storage_folder(target, allow_system)
     if target.exists() and not (target / '.family-drive-id').is_file() and next(target.iterdir(), None) is not None:
-        raise ValueError('Select an empty folder or create a dedicated folder for Family Drive.')
+        raise ValueError('Select an empty folder or create a dedicated folder for SpareDrive.')
     return target
 
 

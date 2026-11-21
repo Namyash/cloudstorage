@@ -1,17 +1,46 @@
+# Local host state, data, and recovery material
 .runtime/
-.venv/
-venv/
-__pycache__/
-*.py[cod]
-.env
-.env.*
-*.sqlite3*
+.http-tmp/
 host.json
 .family-drive-id
 .family-drive-move-*/
 FamilyDriveData/
+SpareDriveData/
+*.sqlite3*
+/Family Drive Login and Recovery.docx
+~$*.docx
+/private/
+.env
+.env.*
+!.env.example
+*.key
+*.pem
+*.pfx
+*.p12
+
+# Dependencies and caches
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.ruff_cache/
+.mypy_cache/
+node_modules/
+
+# Local release tooling
+/release.py
+
+# Build and test output
 build/
 dist/
 *.egg-info/
 *.whl
-node_modules/
+.coverage
+htmlcov/
+*.log
+
+# Local OS and editor files
+Thumbs.db
+.DS_Store
+*.swp

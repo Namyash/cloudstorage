@@ -5,7 +5,7 @@ import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 
-from server import SCHEMA, create_app, now, password_hash
+from backend.server import SCHEMA, create_app, now, password_hash
 
 
 ORIGIN = 'http://127.0.0.1:8765'

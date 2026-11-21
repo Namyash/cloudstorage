@@ -1,4 +1,4 @@
-"""Local Family Drive server. The browser encrypts files in personal spaces."""
+"""Local SpareDrive server. The browser encrypts files in personal spaces."""
 
 import argparse
 import base64
@@ -27,8 +27,9 @@ else:
     from storage import drive_inventory, folder_contents, physical_disks, storage_folder
 
 
-WEB = Path(__file__).resolve().parent / 'web'
-STORAGE_ASSETS = {'storage.js', 'storage.css', 'styles.css'}
+PACKAGE_DIR = Path(__file__).resolve().parent
+WEB = (PACKAGE_DIR if __package__ == 'family_drive' else PACKAGE_DIR.parent) / 'frontend'
+STORAGE_ASSETS = {'storage.js', 'storage.css', 'styles.css', 'sparedrive-logo.png'}
 CHUNK = 4 * 1024 * 1024
 OVERHEAD = 28  # 12-byte IV and 16-byte authentication tag
 MIN_FREE = 512 * 1024 * 1024
@@ -172,7 +173,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
                storage_move=None, storage_status=None):
     root = Path(root).expanduser().resolve()
     if root == root.parent:
-        raise ValueError('Choose a dedicated folder on the drive, such as E:\\FamilyDriveData.')
+        raise ValueError('Choose a dedicated folder on the drive, such as E:\\SpareDriveData.')
     marker = root / '.family-drive-id'
     if expected_storage_id:
         try:
@@ -304,11 +305,11 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             except (OSError, UnicodeError):
                 present = False
             if not present:
-                abort(503, 'The storage drive is unavailable. Reconnect it and restart Family Drive.')
+                abort(503, 'The storage drive is unavailable. Reconnect it and restart SpareDrive.')
             if request.method in ('POST', 'PUT', 'PATCH', 'DELETE'):
                 origin = request.headers.get('Origin')
                 if request.headers.get('X-Family-Drive') != '1' or (origin and origin != g.origin):
-                    abort(403, 'Request blocked. Reload Family Drive and try again.')
+                    abort(403, 'Request blocked. Reload SpareDrive and try again.')
             g.user = None
             token = request.cookies.get(COOKIE, '')
             if len(token) == 43:
@@ -405,9 +406,9 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
     def move_storage():
         user = require_user(admin=True)
         if storage_move is None or g.origin != loopback:
-            abort(403, 'Open Storage explorer on the computer hosting Family Drive to move its data.')
+            abort(403, 'Open Storage explorer on the computer hosting SpareDrive to move its data.')
         values = json_body()
-        password = credential_text(values.get('password'), 'Family Drive sign-in password')
+        password = credential_text(values.get('password'), 'SpareDrive sign-in password')
         throttle('storage-move:' + user['id'], 8)
         if not check_password(password, user['password']):
             abort(400, 'The sign-in password is incorrect.')
@@ -419,7 +420,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
     @app.post('/api/setup')
     def setup():
         if g.origin != loopback:
-            abort(403, 'Create the first admin account on the computer hosting Family Drive.')
+            abort(403, 'Create the first admin account on the computer hosting SpareDrive.')
         if not setup_code or one('SELECT 1 FROM users LIMIT 1'):
             abort(409, 'The admin account already exists.')
         data = json_body()
@@ -585,7 +586,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         user = require_user()
         data = json_body()
         revision = number(data.get('revision'), 'vault revision')
-        password = credential_text(data.get('password'), 'Family Drive sign-in password')
+        password = credential_text(data.get('password'), 'SpareDrive sign-in password')
         throttle('vault-reset:' + user['id'], 8)
         if not check_password(password, user['password']):
             abort(400, 'The sign-in password is incorrect.')
@@ -1072,7 +1073,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
 
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser(description='Run Family Drive on your home computer.')
+    parser = argparse.ArgumentParser(description='Run SpareDrive on your home computer.')
     parser.add_argument('--data', required=True, help='Dedicated storage folder on the selected drive')
     parser.add_argument('--port', type=int, default=8765)
     parser.add_argument('--https-url', help='Optional private HTTPS reverse-proxy origin')
@@ -1085,13 +1086,13 @@ if __name__ == '__main__':
         folder = storage_folder(args.data, args.allow_system_drive)
         site = create_app(folder, args.port, args.https_url, args.storage_id)
     except (ValueError, OSError) as error:
-        parser.exit(1, f'Family Drive could not start. {error}\n')
+        parser.exit(1, f'SpareDrive could not start. {error}\n')
     buffer_folder = folder / '.http-tmp'
     buffer_folder.mkdir(exist_ok=True)
     tempfile.tempdir = str(buffer_folder)
     server = create_server(site, host='127.0.0.1', port=args.port, threads=6,
                            max_request_body_size=CHUNK + OVERHEAD, inbuf_overflow=CHUNK + OVERHEAD + 1)
-    print(f'Family Drive is available at http://127.0.0.1:{args.port}', flush=True)
+    print(f'SpareDrive is available at http://127.0.0.1:{args.port}', flush=True)
     if site.config['SETUP_CODE']:
         print('One-time admin setup code: ' + site.config['SETUP_CODE'], flush=True)
     server.run()

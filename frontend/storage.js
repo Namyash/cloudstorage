@@ -113,7 +113,7 @@ function displayVolumes() {
 function displayState() {
   el('inventory').hidden = false;
   el('home').hidden = state.mode !== 'active';
-  setText(el('home'), 'Open Family Drive');
+  setText(el('home'), 'Open SpareDrive');
   const ready = state.volumes.some(eligible);
   const moving = state.mode === 'moving';
   const active = state.mode === 'active';
@@ -125,23 +125,23 @@ function displayState() {
   el('move-progress').hidden = !moving;
   el('move-result').hidden = !active || !['done', 'failed'].includes(state.move?.phase);
   if (active && state.move?.phase === 'done') {
-    setText(el('move-result'), 'Storage move finished. Family Drive is using the new folder. The previous folder is a backup.');
+    setText(el('move-result'), 'Storage move finished. SpareDrive is using the new folder. The previous folder is a backup.');
     el('move-result').dataset.state = 'active';
   } else if (active && state.move?.phase === 'failed') {
     setText(el('move-result'), state.move.error);
     el('move-result').dataset.state = 'offline';
   }
   if (moving) {
-    setStatus('Storage move in progress', 'Family Drive is pausing uploads and changes while it copies and verifies your household data.', 'setup');
+    setStatus('Storage move in progress', 'SpareDrive is pausing uploads and changes while it copies and verifies your household data.', 'setup');
     const job = state.move;
     setText(el('move-detail'), job.phase === 'waiting' ? 'Waiting for current requests to finish.' :
       job.phase === 'verifying' ? 'Verifying the database and activating the new folder.' : `${bytes(job.copied)} of ${bytes(job.total)} copied · ${job.files} of ${job.fileCount} files verified`);
     if (job.total > 0) el('move-meter').value = Math.min(100, Math.round(100 * job.copied / job.total));
     else el('move-meter').removeAttribute('value');
-  } else if (active) setStatus('Storage is connected', moveRequested ? 'Browse the destination drive or folder below, then choose a new folder name.' : `Family Drive uses ${state.selected}`, 'active');
+  } else if (active) setStatus('Storage is connected', moveRequested ? 'Browse the destination drive or folder below, then choose a new folder name.' : `SpareDrive uses ${state.selected}`, 'active');
   else if (state.mode === 'offline') setStatus('Your storage drive is offline', `${state.selected}. ${state.detail}`, 'offline');
-  else if (ready) setStatus('Data drive available', state.unlocked ? 'Browse a drive below and choose where Family Drive should store the database and files.' : 'Unlock storage setup using the code in your terminal to browse a drive and choose a folder.', 'setup');
-  else setStatus('Choose a storage drive', 'Connect a spare drive with a Windows drive letter. Family Drive checks for changes automatically.', 'offline');
+  else if (ready) setStatus('Data drive available', state.unlocked ? 'Browse a drive below and choose where SpareDrive should store the database and files.' : 'Unlock storage setup using the code in your terminal to browse a drive and choose a folder.', 'setup');
+  else setStatus('Choose a storage drive', 'Connect a spare drive with a Windows drive letter. SpareDrive checks for changes automatically.', 'offline');
   displayVolumes();
   if (view.drive && (moving || !state.unlocked || !state.volumes.some(volume => volume.drive === view.drive && eligible(volume)))) {
     query += 1;
@@ -170,7 +170,7 @@ async function refresh(quiet = false) {
       el('inventory').hidden = true;
       el('unlock-panel').hidden = true;
       el('browse').hidden = true;
-      setStatus('Admin sign-in required', 'Sign in to Family Drive as the administrator to browse the attached drives.', 'offline');
+      setStatus('Admin sign-in required', 'Sign in to SpareDrive as the administrator to browse the attached drives.', 'offline');
     } else if (!quiet || !state) report(error.message);
   } finally {
     refreshing = false;
@@ -190,7 +190,7 @@ function updateChoice() {
   setText(el('select-submit'), moving ? 'Copy and switch storage' : 'Create and use folder');
   setText(el('choice-title'), moving ? 'Choose new storage folder' : reconnect ? 'Reconnect your storage' : 'Choose storage folder');
   setText(el('select-current'), reconnect ? 'Reconnect this folder' : 'Use this folder');
-  setText(el('choice-help'), moving ? 'Family Drive copies your accounts and files, checks the copy, and then switches. Your previous folder stays available as a backup.' : reconnect ? 'Browse to your original Family Drive folder if Windows changed the drive letter.' : 'Create a dedicated folder or use an existing Family Drive folder or an empty folder.');
+  setText(el('choice-help'), moving ? 'SpareDrive copies your accounts and files, checks the copy, and then switches. Your previous folder stays available as a backup.' : reconnect ? 'Browse to your original SpareDrive folder if Windows changed the drive letter.' : 'Create a dedicated folder or use an existing SpareDrive folder or an empty folder.');
 }
 
 function displayFolder() {
@@ -201,7 +201,7 @@ function displayFolder() {
   el('parent').disabled = !view.path;
   el('entries-table').hidden = !entries.length;
   el('browse-message').hidden = Boolean(entries.length);
-  el('browse-message').textContent = managed ? 'This is a Family Drive storage folder. Use the app’s file spaces to access managed files.' : 'This folder is empty.';
+  el('browse-message').textContent = managed ? 'This is a SpareDrive storage folder. Use the app’s file spaces to access managed files.' : 'This folder is empty.';
   el('entries').innerHTML = entries.map(item => `<tr><td>${item.directory ? `<button class="folder-button" data-folder="${escape(item.name)}" type="button">${escape(item.name)}</button>` : escape(item.name)}</td><td>${item.directory ? 'Folder' : 'File'}</td><td>${bytes(item.size)}</td><td>${escape(new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(item.modified * 1000)))}</td></tr>`).join('');
   el('pages').hidden = !more && view.offset === 0;
   el('prev').disabled = view.offset === 0;

@@ -16,7 +16,7 @@ export function fromBase64(value) {
 }
 
 async function deriveSecret(passphrase, salt) {
-  if (!globalThis.crypto?.subtle) throw new Error('Open Family Drive using its HTTPS or localhost address.');
+  if (!globalThis.crypto?.subtle) throw new Error('Open SpareDrive using its HTTPS or localhost address.');
   const material = await crypto.subtle.importKey('raw', text.encode(passphrase), 'PBKDF2', false, ['deriveBits']);
   const params = { name: 'PBKDF2', hash: 'SHA-256', salt, iterations: 600000 };
   return new Uint8Array(await crypto.subtle.deriveBits(params, material, 256));
@@ -72,7 +72,7 @@ export async function unlockSecret(user, vault, input, recovery = false) {
     return { secret, key };
   } catch (error) {
     secret?.fill(0);
-    if (!globalThis.crypto?.subtle) throw new Error('Open Family Drive using its HTTPS or localhost address.');
+    if (!globalThis.crypto?.subtle) throw new Error('Open SpareDrive using its HTTPS or localhost address.');
     throw new Error(recovery ? 'That recovery key could not unlock this vault.' : 'That vault passphrase is incorrect.');
   }
 }

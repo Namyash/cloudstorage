@@ -136,7 +136,7 @@ def create_host(config, default_port=8765, set_temp=None):
             target = folder_choice(values)
             source = Path(settings['data'])
             if target.exists() or target.is_relative_to(source) or source.is_relative_to(target):
-                raise ValueError('Choose a new folder outside the current Family Drive folder.')
+                raise ValueError('Choose a new folder outside the current SpareDrive folder.')
             updated = dict(settings, data=str(target), storageId=secrets.token_hex(16), allowSystemDrive=values.get('allowSystem') is True)
             move = {'phase': 'waiting', 'target': str(target), 'copied': 0, 'total': 0, 'files': 0, 'fileCount': 0}
             Thread(target=run_move, args=(source, settings['storageId'], target, updated), daemon=True, name='family-drive-storage-move').start()
@@ -149,7 +149,7 @@ def create_host(config, default_port=8765, set_temp=None):
     @portal.before_request
     def local_only():
         if request.host != f'127.0.0.1:{port}' or request.remote_addr != '127.0.0.1':
-            abort(403, 'Open the storage setup on your Family Drive computer.')
+            abort(403, 'Open the storage setup on your SpareDrive computer.')
         if request.method == 'POST':
             source = request.headers.get('Origin')
             if request.headers.get('X-Family-Drive') != '1' or (source and source != origin):
@@ -159,7 +159,7 @@ def create_host(config, default_port=8765, set_temp=None):
     def headers(response):
         response.headers.update({'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff',
                                  'Referrer-Policy': 'no-referrer', 'X-Frame-Options': 'DENY',
-                                 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
+                                 'Content-Security-Policy': "default-src 'none'; script-src 'self'; style-src 'self'; img-src 'self'; connect-src 'self'; frame-ancestors 'none'; base-uri 'none'; form-action 'self'"})
         return response
 
     @portal.errorhandler(HTTPException)
@@ -237,7 +237,7 @@ def create_host(config, default_port=8765, set_temp=None):
             except ValueError as error:
                 abort(400, str(error))
             if settings and not marker_matches(path, settings.get('storageId')):
-                abort(409, 'Choose the original Family Drive folder. Its storage identity must match.')
+                abort(409, 'Choose the original SpareDrive folder. Its storage identity must match.')
             updated = dict(settings, data=str(path), port=port, allowSystemDrive=values.get('allowSystem') is True)
             current = open_drive(path, updated)
             updated['storageId'] = (path / '.family-drive-id').read_text(encoding='ascii')
@@ -272,7 +272,7 @@ def create_host(config, default_port=8765, set_temp=None):
 
 
 def main():
-    parser = argparse.ArgumentParser(description='Run Family Drive and the local storage explorer.')
+    parser = argparse.ArgumentParser(description='Run SpareDrive and the local storage explorer.')
     local = Path(os.environ.get('LOCALAPPDATA', Path.home() / '.config')) / 'FamilyDrive' / 'host.json'
     parser.add_argument('config', type=Path, nargs='?', default=local, help='Host settings file')
     parser.add_argument('--port', type=int, default=8765, help='Local port for a new host setup')
@@ -280,7 +280,7 @@ def main():
     service, port, code = create_host(args.config, args.port, set_temp=lambda path: setattr(tempfile, 'tempdir', path))
     server = create_server(service, host='127.0.0.1', port=port, threads=6,
                            max_request_body_size=CHUNK + OVERHEAD, inbuf_overflow=CHUNK + OVERHEAD + 1)
-    print(f'Family Drive is available at http://127.0.0.1:{port}/', flush=True)
+    print(f'SpareDrive is available at http://127.0.0.1:{port}/', flush=True)
     print(f'Local storage and admin setup code: {code}', flush=True)
     server.run()
 

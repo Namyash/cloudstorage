@@ -16,15 +16,16 @@ classifiers = [
 ]
 
 [project.scripts]
+sparedrive = "family_drive.host:main"
 family-drive = "family_drive.host:main"
 
 [tool.setuptools]
-packages = ["family_drive"]
-package-dir = {family_drive = "."}
+packages = ["family_drive", "family_drive.frontend"]
+package-dir = {family_drive = "backend", "family_drive.frontend" = "frontend"}
 include-package-data = false
 
 [tool.setuptools.package-data]
-family_drive = ["web/*.html", "web/*.css", "web/*.js"]
+"family_drive.frontend" = ["*.html", "*.css", "*.js", "sparedrive-logo.png"]
 
 [tool.setuptools.dynamic]
 dependencies = {file = ["requirements.txt"]}

@@ -16,7 +16,7 @@ COPY_BLOCK = 4 * 1024 * 1024
 def move_household(source, target, storage_id, new_storage_id, reserve, report):
     source, target = Path(source), Path(target)
     if target.exists() or target.is_relative_to(source) or source.is_relative_to(target):
-        raise ValueError('Choose a new folder outside the current Family Drive folder.')
+        raise ValueError('Choose a new folder outside the current SpareDrive folder.')
     marker = source / '.family-drive-id'
     if marker.read_text(encoding='ascii') != storage_id:
         raise ValueError('The original drive is unavailable.')

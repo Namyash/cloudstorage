@@ -32,6 +32,7 @@ const fileSorts = {
   smallest: ['Smallest first', (a, b) => a.size - b.size],
 };
 let transfer = null;
+let uploadReport = null;
 let toastTimer;
 
 const paths = {
@@ -59,6 +60,7 @@ const paths = {
   star: '<path d="m12 3 2.8 5.7 6.2.9-4.5 4.4 1.1 6.2L12 17.3l-5.6 2.9 1.1-6.2L3 9.6l6.2-.9L12 3Z"/>',
   list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h1m-1 6h1m-1 6h1"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
+  check: '<path d="m5 12 4 4 10-10"/>',
 };
 
 function icon(name, size = 20) {
@@ -95,16 +97,13 @@ async function api(path, options = {}) {
   const method = options.method || 'GET';
   const headers = { 'X-Family-Drive': '1' };
   let body;
-  if (options.binary) {
-    headers['Content-Type'] = 'application/octet-stream';
-    body = options.binary;
-  } else if (options.data !== undefined) {
+  if (options.data !== undefined) {
     headers['Content-Type'] = 'application/json';
     body = JSON.stringify(options.data);
   }
   const response = await fetch(`/api/${path}`, { method, headers, body, cache: 'no-store' });
   const payload = await response.json().catch(() => ({}));
-  if (!response.ok) throw Object.assign(new Error(payload.error || 'Family Drive could not complete the request.'), { status: response.status });
+  if (!response.ok) throw Object.assign(new Error(payload.error || 'SpareDrive could not complete the request.'), { status: response.status });
   return payload;
 }
 
@@ -116,7 +115,7 @@ function notice(message, bad = false) {
 }
 
 function brand() {
-  return `<div class="brand"><span class="brand-icon">${icon('drive', 21)}</span><span>Family<span class="brand-accent">Drive</span><small>PRIVATE STORAGE</small></span></div>`;
+  return `<div class="brand"><img class="brand-icon" src="/assets/sparedrive-logo.png" width="42" height="42" alt=""><span>SpareDrive</span></div>`;
 }
 
 const roleName = role => ({ admin: 'Admin', family: 'Family', guest: 'Guest' })[role];
@@ -127,6 +126,7 @@ const selectedVault = () => isArchive() ? data.archives.find(item => page === `a
 
 function clearVaultKey() {
   selectedFiles.clear();
+  uploadReport = null;
   if (isVaultPage()) {
     files = [];
     folders = [];
@@ -171,14 +171,14 @@ const usernameField = '<label>Username<input name="username" autocomplete="usern
 function authView() {
   displayedPage = undefined;
   if (data.setupOnHost) {
-    app.innerHTML = '<main class="loading"><h1>Family Drive needs setup</h1><p>Create the first admin account on the computer hosting Family Drive.</p></main>';
+    app.innerHTML = '<main class="loading"><h1>SpareDrive needs setup</h1><p>Create the first admin account on the computer hosting SpareDrive.</p></main>';
     return;
   }
   const setup = data.setup;
   const change = data.changePassword;
-  const title = setup ? 'Set up your family drive' : change ? 'Choose your own password' : 'Welcome back';
+  const title = setup ? 'Set up SpareDrive' : change ? 'Choose your own password' : 'Welcome back';
   const description = setup ? 'Create the first admin account using the setup code on your host computer. You’ll assign storage quotas from the dashboard.' : change ? 'Replace your temporary password before opening your storage.' : 'Sign in to access your family storage.';
-  app.innerHTML = `<main class="auth-shell"><aside class="auth-side">${brand()}<div class="auth-message"><div class="auth-symbol">${icon('drive', 52)}</div><h2>Your family’s files.<br>On your own drive.</h2><p>A home for the photos and documents you choose to keep.</p></div><div class="auth-foot">${icon('shield', 18)} Private family storage</div></aside>
+  app.innerHTML = `<main class="auth-shell"><aside class="auth-side">${brand()}<div class="auth-message"><img class="auth-symbol" src="/assets/sparedrive-logo.png" width="106" height="106" alt=""><h2>Your family’s files.<br>On your own drive.</h2><p>A home for the photos and documents you choose to keep.</p></div><div class="auth-foot">${icon('shield', 18)} Private family storage</div></aside>
     <section class="auth-main"><div class="auth-mobile">${brand()}</div><div class="auth-card"><h1>${title}</h1><p>${description}</p><form id="auth-form">
       ${setup ? '<label>Setup code<input name="code" autocomplete="off" required></label><label>Display name<input name="name" autocomplete="name" maxlength="60" required></label>' : ''}
       ${change ? '<label>Temporary or current password<input name="current" type="password" autocomplete="current-password" required></label>' : usernameField}
@@ -214,14 +214,16 @@ function layout(content, title) {
   const group = (key, label, symbol) => `<button class="nav-link ${section === key ? 'current' : ''}" data-page="${key}" ${section === key ? 'aria-current="page"' : ''}>${icon(symbol, 19)}<span>${label}</span></button>`;
   const manage = isAdmin() ? `<div class="nav-group"><span class="nav-label">MANAGE</span>${items.slice(0, 2).map(item => group(...item)).join('')}<a class="nav-link storage-link" href="/storage">${icon('drive', 19)}<span>Storage explorer</span></a></div>` : '';
   const storage = items.slice(isAdmin() ? 2 : 0).map(item => group(...item)).join('');
+  const dashboard = page === 'overview';
+  const toolbar = dashboard ? peopleSearch() : `<div class="breadcrumbs"><span>Workspace</span>${icon('chevron', 14)}<strong>${esc(title)}</strong></div>`;
   app.innerHTML = `<div class="shell"><aside class="sidebar">${brand()}
     <nav aria-label="Workspace">${manage}<div class="nav-group"><span class="nav-label">STORAGE</span>${storage}</div></nav>
     <div class="sidebar-bottom"><div class="drive-status"><span class="drive-glyph">${icon('drive', 18)}</span><span>Local storage<small><i></i> Drive connected</small></span></div>
       <div class="profile">${avatar(data.user)}<span class="profile-name">${esc(data.user.name)}<small>${roleName(data.user.role)}</small></span><button class="icon-button sidebar-button" data-action="logout" title="Sign out" aria-label="Sign out">${icon('logout', 18)}</button></div></div></aside>
-    <div class="workspace"><header class="topbar"><div class="breadcrumbs"><span>Workspace</span>${icon('chevron', 14)}<strong>${esc(title)}</strong></div><button class="button settings-link" data-action="settings">${icon('settings', 19)}<span>Account</span></button></header>
+    <div class="workspace"><header class="topbar${dashboard ? ' overview-toolbar' : ''}">${toolbar}<div class="toolbar-actions"><button class="button settings-link" data-action="settings">${icon('settings', 18)}<span>Account</span></button>${dashboard ? addButton() : ''}</div></header>
     <main class="content${entering ? ' entering' : ''}">${content}</main></div></div>`;
-  const ring = document.querySelector('.ring');
-  if (ring) ring.style.setProperty('--fill', `${ring.dataset.percent}%`);
+  const gauge = document.querySelector('.allocation-gauge');
+  if (gauge) gauge.style.setProperty('--gauge-fill', `${Number(gauge.dataset.percent) * 1.8}deg`);
 }
 
 function pageTitle(name, tagline, actions = '') {
@@ -234,9 +236,17 @@ function status(person) {
   return ['Active', 'good'];
 }
 
-function personRows() {
+function matchingPeople() {
   const term = search.toLowerCase().trim();
-  const people = data.people.filter(person => `${person.name} ${person.username} ${person.role}`.toLowerCase().includes(term));
+  return data.people.filter(person => `${person.name} ${person.username} ${person.role}`.toLowerCase().includes(term));
+}
+
+function peopleSearch() {
+  return `<label class="search">${icon('search', 17)}<span class="visually-hidden">Search people</span><input id="search" type="search" placeholder="Search people" value="${esc(search)}"></label>`;
+}
+
+function personRows() {
+  const people = matchingPeople();
   if (!people.length) return '<tr><td class="empty-row" colspan="5">No matching accounts</td></tr>';
   return people.map(person => {
     const [label, color] = status(person);
@@ -250,8 +260,33 @@ function personRows() {
 
 function peopleTable() {
   return `<section class="panel people-panel" aria-labelledby="people-title"><div class="panel-heading"><div><h2 id="people-title">People & access</h2><p>Manage accounts, storage quotas, and shared-space access.</p></div>
-    <label class="search">${icon('search', 17)}<span class="visually-hidden">Search people</span><input id="search" type="search" placeholder="Search people" value="${esc(search)}"></label></div>
+    ${peopleSearch()}</div>
     <div class="table-scroll"><table><thead><tr><th scope="col">Name</th><th scope="col">Role</th><th scope="col">Storage</th><th scope="col">Status</th><th scope="col"><span class="visually-hidden">Manage</span></th></tr></thead><tbody id="rows">${personRows()}</tbody></table></div></section>`;
+}
+
+function personCard(person) {
+  const [label, color] = status(person);
+  const access = person.role === 'family' ? (person.familyAccess ? 'Family space enabled' : 'Family space disabled')
+    : person.role === 'guest' ? (person.exchange ? 'Guest exchange enabled' : 'Private vault only') : 'Manages this drive';
+  return `<article class="account-card">
+    <div class="account-card-head"><div class="person-cell">${avatar(person)}<div><strong>${esc(person.name)}</strong>
+      <small>@${esc(person.username)}${person.id === data.user.id ? ' · You' : ''}</small></div></div>
+      <button class="icon-button" data-action="edit-person" data-id="${person.id}" aria-label="Manage ${esc(person.name)}" title="Manage ${esc(person.name)}">${icon('more', 19)}</button></div>
+    <div class="account-card-access"><span class="status ${color}"><i></i>${label}</span><span>${access}</span></div>
+    <div class="account-card-quota"><span>Storage</span><strong>${formatSize(person.used)} / ${formatSize(person.quota)}</strong></div>
+    <progress max="100" value="${ratio(person.used, person.quota)}" aria-label="Storage used by ${esc(person.name)}"></progress>
+  </article>`;
+}
+
+function overviewPeople() {
+  const people = matchingPeople();
+  return [['admin', 'Administrators'], ['family', 'Family members'], ['guest', 'Guests']].map(([role, title]) => {
+    const group = people.filter(person => person.role === role);
+    return `<section class="account-column">
+      <h3>${title} <span aria-label="${group.length} accounts">${group.length}</span></h3>
+      ${group.length ? group.map(personCard).join('') : `<div class="account-empty">${search.trim() ? 'No matches' : 'No accounts yet'}</div>`}
+    </section>`;
+  }).join('');
 }
 
 function overview() {
@@ -259,18 +294,23 @@ function overview() {
   const pct = Math.round(ratio(drive.allocated, drive.allocatableCapacity));
   const family = data.people.filter(person => person.role !== 'guest').length;
   const guests = data.people.length - family;
-  return `${pageTitle('Overview', 'Manage your family’s storage and access in one place.', addButton())}
-    <div class="summary-grid">
-      <section class="panel storage-card"><div class="summary-title"><span class="tile-icon">${icon('drive', 20)}</span><h2>Drive usage</h2></div>
-        <div class="drive-main"><div><div class="big-stat">${formatSize(drive.used)}</div><p class="sub-stat">stored on your drive</p>
-          <div class="legend"><span><i class="swatch assigned"></i><strong>${formatSize(drive.allocated)}</strong> allocated</span><span><i class="swatch unassigned"></i><strong>${formatSize(drive.availableToAllocate)}</strong> available to allocate</span></div></div>
-          <div class="ring" data-percent="${pct}" role="img" aria-label="${pct} percent of allocatable storage assigned"><div class="ring-center"><strong>${pct}%</strong><small>allocated</small></div></div></div>
-        <div class="card-footer"><span>Drive capacity <strong>${formatSize(drive.total)}</strong></span><span>Free on disk <strong>${formatSize(drive.free)}</strong></span></div>
-        <p class="storage-location"><span>Storage folder</span><strong>${esc(drive.root)}</strong></p></section>
-      <section class="panel access-card"><div class="summary-title"><span class="tile-icon lavender">${icon('people', 20)}</span><h2>Household access</h2></div>
-        <div class="count-grid"><div><strong>${family}</strong><span>Family & admin</span></div><div><strong>${guests}</strong><span>${guests === 1 ? 'Guest' : 'Guests'}</span></div></div>
-        <div class="access-note">${icon('shield', 18)}<span>Only accounts you create can sign in.</span></div></section>
-    </div>${peopleTable()}`;
+  const meter = (label, bytes) => `<div class="drive-meter"><div><span>${label}</span><strong>${formatSize(bytes)}</strong></div>
+    <progress max="100" value="${ratio(bytes, drive.total)}" aria-label="${label}"></progress></div>`;
+  return `<div class="overview-intro"><h1>Overview</h1><a class="button secondary" href="/storage">${icon('drive', 17)} Storage explorer</a></div>
+    <section class="drive-dashboard" aria-label="Drive and household summary">
+      <div class="drive-snapshot"><h2>Drive usage</h2><div class="drive-value">${formatSize(drive.used)}</div><p>Stored in SpareDrive</p>
+        ${meter('Assigned storage', drive.allocated)}${meter('Free on disk', drive.free)}</div>
+      <div class="drive-allocation"><h2>Storage allocation</h2>
+        <div class="allocation-gauge" data-percent="${pct}"><div class="allocation-arc" aria-hidden="true"></div><div class="allocation-label"><strong>${pct}%</strong><span>allocated</span></div></div>
+        <p><strong>${formatSize(drive.availableToAllocate)}</strong> available to allocate</p></div>
+      <div class="drive-accounts"><span class="summary-icon">${icon('people', 18)}</span><strong>${family}</strong><span>Family &amp; admin</span></div>
+      <div class="drive-accounts"><span class="summary-icon">${icon('exchange', 18)}</span><strong>${guests}</strong><span>${guests === 1 ? 'Guest' : 'Guests'}</span></div>
+      <div class="drive-caption"><span>${icon('drive', 15)} <strong>${esc(drive.root)}</strong></span><span>${formatSize(drive.total)} total capacity</span></div>
+    </section>
+    <section class="overview-people" aria-labelledby="overview-people-title">
+      <div class="overview-section-head"><h2 id="overview-people-title">People &amp; access</h2><button class="button text-button" data-page="people">Manage people ${icon('chevron', 15)}</button></div>
+      <div class="account-board" id="rows">${overviewPeople()}</div>
+    </section>`;
 }
 
 function addButton() {
@@ -352,26 +392,59 @@ function folderPath(id) {
 function folderBreadcrumbs() {
   if (fileView !== 'browse') return '';
   const path = folderPath(folderId);
+  if (page === 'family' && !path.length) return '';
   return `<nav class="folder-path" aria-label="Folder path">
     <button class="button text-button" data-action="folder-root">${esc(workspaceName())}</button>
     ${path.map(folder => `${icon('chevron', 14)}<button class="button text-button" data-action="open-folder" data-id="${itemKey(folder)}">${esc(folder.name)}</button>`).join('')}
   </nav>`;
 }
 
+function familyQuotaMissing() {
+  return page === 'family' && !data.familyQuota;
+}
+
+function fileActions() {
+  const disabled = transfer ? 'disabled' : '';
+  const folder = `<button class="button secondary" data-action="new-folder" ${disabled}>${icon('folder', 18)} New folder</button>`;
+  if (familyQuotaMissing()) return folder;
+  return `${folder}<button class="button primary" data-action="upload" ${disabled}>${icon('upload', 18)} Upload files</button>
+    <button class="button secondary" data-action="upload-folder" ${disabled}>${icon('upload', 18)} Upload folder</button>
+    <input type="file" id="file-picker" multiple hidden><input type="file" id="folder-picker" webkitdirectory multiple hidden>`;
+}
+
+function familyStorage() {
+  const missing = familyQuotaMissing();
+  const guidance = isAdmin() ? 'Set a quota to enable file uploads.' : 'An administrator needs to set a quota before you can upload files.';
+  return `<section class="family-storage" aria-label="Family Space storage">
+    <div class="family-storage-summary"><span class="family-storage-icon">${icon('drive', 20)}</span>
+      <div><h2>Shared storage</h2>
+        <p>${missing ? `<strong>Quota not set.</strong> ${guidance}` :
+          `<strong>${formatSize(data.familyUsed)}</strong> used of ${formatSize(data.familyQuota)}`}</p></div></div>
+    ${isAdmin() ? `<button class="button ${missing ? 'primary' : 'secondary'}" data-action="family-quota" ${transfer ? 'disabled' : ''}>
+      ${icon('settings', 17)} ${missing ? 'Set storage quota' : 'Edit quota'}</button>` : ''}
+    ${missing ? '' : `<progress max="100" value="${ratio(data.familyUsed, data.familyQuota)}" aria-label="Family Space storage used"></progress>`}
+  </section>`;
+}
+
 function fileTable() {
   const views = [['browse', 'Browse', 'folder'], ['recent', 'Recent', 'clock'], ['starred', 'Starred', 'star'], ['trash', 'Trash', 'trash']];
-  return `<section class="panel files-panel" id="file-workspace">
-    ${isArchive() ? '' : `<nav class="file-views" aria-label="File views">${views.map(([value, label, symbol]) => `<button class="button file-view ${value === fileView ? 'current' : ''}" data-action="file-view" data-id="${value}" aria-pressed="${value === fileView}" ${transfer ? 'disabled' : ''}>${icon(symbol, 17)}${label}</button>`).join('')}</nav>`}
-    <div class="panel-heading file-heading">${folderBreadcrumbs()}<div class="file-tools">
+  const family = page === 'family';
+  const crumbs = folderBreadcrumbs();
+  const canSearch = !family || Boolean(search || (fileView === 'trash' ? trash.length : activeItems().length));
+  return `<section class="panel files-panel${family ? ' family-library' : ''}" id="file-workspace">
+    ${isArchive() ? '' : `<div class="file-library-header"><nav class="file-views" aria-label="File views">${views.map(([value, label, symbol]) => `<button class="button file-view ${value === fileView ? 'current' : ''}" data-action="file-view" data-id="${value}" aria-pressed="${value === fileView}" ${transfer ? 'disabled' : ''}>${icon(symbol, 17)}${label}</button>`).join('')}</nav>
+      ${family && fileView === 'browse' ? `<div class="file-library-actions">${fileActions()}</div>` : ''}</div>`}
+    <div class="panel-heading file-heading" ${!crumbs && !canSearch ? 'hidden' : ''}>${crumbs}
+    <div class="file-tools" ${canSearch ? '' : 'hidden'}>
     <label class="search">${icon('search', 17)}<span class="visually-hidden">Search this space</span><input id="search" type="search" placeholder="Search this space" value="${esc(search)}"></label>
-    <select id="file-sort" aria-label="Sort items" ${fileView === 'recent' ? 'disabled' : ''}>${Object.entries(fileSorts).map(([key, [label]]) => `<option value="${key}" ${key === fileSort ? 'selected' : ''}>${label}</option>`).join('')}</select>
-    <button class="icon-button layout-toggle" data-action="toggle-grid" title="${gridView ? 'List view' : 'Grid view'}" aria-label="${gridView ? 'Switch to list view' : 'Switch to grid view'}">${icon(gridView ? 'list' : 'overview', 18)}</button></div></div>
+    <select id="file-sort" data-when-files-visible aria-label="Sort items" ${fileView === 'recent' ? 'disabled' : ''}>${Object.entries(fileSorts).map(([key, [label]]) => `<option value="${key}" ${key === fileSort ? 'selected' : ''}>${label}</option>`).join('')}</select>
+    <button class="icon-button layout-toggle" data-when-files-visible data-action="toggle-grid" title="${gridView ? 'List view' : 'Grid view'}" aria-label="${gridView ? 'Switch to list view' : 'Switch to grid view'}">${icon(gridView ? 'list' : 'overview', 18)}</button></div></div>
     ${isArchive() ? '' : `<div id="selection-tools" class="selection-tools" hidden><strong id="selection-count"></strong>
       ${fileView === 'trash' ? '<button class="button secondary" data-action="restore-selected">Restore</button><button class="button danger" data-action="purge-selected">Delete forever</button>' :
        '<button class="button secondary" data-action="move-selected">Move</button><button class="button secondary" data-action="remove-selected">Move to Trash</button>'}</div>`}
-    <div id="files-empty" class="files-empty" hidden>${icon(fileView === 'trash' ? 'trash' : fileView === 'starred' ? 'star' : 'folder', 26)}<strong></strong><small></small></div>
-    ${gridView ? `${isArchive() ? '' : '<label class="grid-select"><input type="checkbox" id="select-visible"> Select visible items</label>'}<div class="file-grid" id="rows">${fileRows()}</div>` :
-      `<div class="table-scroll"><table><thead><tr>${isArchive() ? '' : '<th class="file-selection"><input type="checkbox" id="select-visible" aria-label="Select all eligible items shown"></th>'}<th>Name</th><th>Size</th><th>${fileView === 'trash' ? 'Removed' : 'Added'}</th><th><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="rows">${fileRows()}</tbody></table></div>`}
+    <div id="files-empty" class="files-empty" role="status" hidden><span class="files-empty-icon">${icon(fileView === 'trash' ? 'trash' : fileView === 'starred' ? 'star' : 'folder', 25)}</span><strong></strong><small></small></div>
+    <div data-file-list>${gridView ? `${isArchive() ? '' : '<label class="grid-select"><input type="checkbox" id="select-visible"> Select visible items</label>'}<div class="file-grid" id="rows">${fileRows()}</div>` :
+      `<div class="table-scroll"><table><thead><tr>${isArchive() ? '' : '<th class="file-selection"><input type="checkbox" id="select-visible" aria-label="Select all eligible items shown"></th>'}<th>Name</th><th>Size</th><th>${fileView === 'trash' ? 'Removed' : 'Added'}</th><th><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="rows">${fileRows()}</tbody></table></div>`}</div>
     </section>`;
 }
 
@@ -392,9 +465,13 @@ function updateFileSelection() {
 function updateEmptyState() {
   const element = document.querySelector('#files-empty');
   if (!element) return;
-  element.hidden = Boolean(document.querySelector('#rows').children.length);
+  const hasRows = Boolean(document.querySelector('#rows').children.length);
+  element.hidden = hasRows;
+  document.querySelector('[data-file-list]').hidden = !hasRows;
+  document.querySelectorAll('[data-when-files-visible]').forEach(control => { control.hidden = !hasRows; });
   const messages = {
-    browse: ['This folder is empty', isArchive() ? '' : 'Upload files or create a folder to get started.'],
+    browse: [page === 'family' && !folderId ? 'No files or folders yet' : 'This folder is empty',
+      isArchive() ? '' : familyQuotaMissing() ? 'Create a folder to organize this space.' : 'Upload files or create a folder to get started.'],
     recent: ['No recent files', 'Uploaded files appear here.'],
     starred: ['Nothing starred yet', 'Use the star beside a file or folder to keep it handy.'],
     trash: ['Trash is empty', 'Items you remove appear here until restored or permanently deleted.'],
@@ -404,7 +481,68 @@ function updateEmptyState() {
   element.querySelector('small').textContent = description;
 }
 
+function uploadProgress(batch) {
+  const file = batch.current;
+  const sent = batch.savedBytes + (file && !file.saved ? file.sent : 0);
+  const bytes = size => size ? formatSize(size) : '0 B';
+  return {
+    overall: batch.totalBytes ? ratio(sent, batch.totalBytes) : ratio(batch.saved, batch.total),
+    current: file?.saved ? 100 : file ? ratio(file.sent, file.size) : 0,
+    summary: `${batch.saved} of ${batch.total} files saved`,
+    batchBytes: `${bytes(sent)} / ${bytes(batch.totalBytes)} sent`,
+    currentBytes: file ? `${bytes(file.sent)} / ${bytes(file.size)}` : '',
+  };
+}
+
+function uploadPanel(batch) {
+  const complete = batch.current === null && transfer !== batch;
+  const progress = uploadProgress(batch);
+  const failed = batch.failures.length;
+  const skipped = batch.total - batch.saved - failed;
+  const title = complete ? (failed || skipped ? 'Upload finished with issues' : 'Upload complete') : 'Uploading files';
+  return `<section class="panel upload-panel${complete ? ' upload-result' : ' upload-active'}" aria-label="File uploads">
+    <div class="upload-heading">
+      <span class="upload-glyph">${complete ? icon(failed || skipped ? 'file' : 'check', 19) : '<span class="upload-spinner" aria-hidden="true"></span>'}</span>
+      <div><h2>${title}</h2><p id="upload-summary" role="status">${esc(progress.summary)}${complete && failed ? ` · ${failed} failed` : ''}${complete && skipped ? ` · ${skipped} skipped` : ''}</p></div>
+      ${complete ? `<button class="icon-button" data-action="dismiss-upload" aria-label="Dismiss upload results">${icon('close', 18)}</button>` : ''}
+    </div>
+    ${complete ? (failed ? `<details class="upload-errors"><summary>View upload errors</summary><ul>${batch.failures.map(({name, message}) =>
+      `<li><strong>${esc(name)}</strong><span>${esc(message)}</span></li>`).join('')}</ul></details>` : '') : `
+      <div class="upload-batch">
+        <div><strong>Overall progress</strong><span id="upload-batch-bytes">${esc(progress.batchBytes)}</span></div>
+        <progress max="100" value="${progress.overall}" id="upload-batch-progress" aria-label="Overall upload progress"></progress>
+      </div>
+      <div class="upload-current" ${batch.current ? '' : 'hidden'}>
+        <div><strong id="upload-filename">${esc(batch.current?.name)}</strong><span id="upload-file-bytes">${esc(progress.currentBytes)}</span></div>
+        <progress max="100" value="${progress.current}" id="upload-file-progress" aria-label="Current file upload progress"></progress>
+        <p id="upload-phase" role="status">${esc(batch.current?.phase)}</p>
+      </div>`}
+  </section>`;
+}
+
+function updateUploadPanel(batch) {
+  const panel = document.querySelector('.upload-active');
+  if (!panel || !batch.current) return;
+  const progress = uploadProgress(batch);
+  const fields = {
+    'upload-summary': progress.summary,
+    'upload-batch-bytes': progress.batchBytes,
+    'upload-filename': batch.current.name,
+    'upload-file-bytes': progress.currentBytes,
+    'upload-phase': batch.current.phase,
+  };
+  panel.querySelector('.upload-current').hidden = false;
+  for (const [id, value] of Object.entries(fields)) {
+    const element = panel.querySelector('#' + id);
+    if (element.textContent !== value) element.textContent = value;
+  }
+  panel.querySelector('#upload-batch-progress').value = progress.overall;
+  panel.querySelector('#upload-file-progress').value = progress.current;
+}
+
 function transferBar() {
+  if (transfer?.kind === 'upload') return uploadPanel(transfer);
+  if (uploadReport?.page === page && !transfer && (!isVaultPage() || vaultKey)) return uploadPanel(uploadReport);
   if (!transfer) return '';
   return `<div class="panel transfer" role="status"><span id="transfer-message">${esc(transfer.label)}</span><progress id="transfer-progress" max="100" value="${transfer.percent}" aria-label="Transfer progress"></progress></div>`;
 }
@@ -433,19 +571,16 @@ function workspace() {
       <section class="panel exchange-list">${data.people.filter(person => person.role === 'guest').map(person => `<div><div class="person-cell">${avatar(person)}<div><strong>${esc(person.name)}</strong><small>${person.exchange ? 'Guest access enabled' : 'Guest access disabled'}</small></div></div><button class="button secondary" data-page="exchange:${person.id}">Open folder ${icon('chevron', 15)}</button></div>`).join('')}</section>`;
   }
   const description = archive ? 'Open these files with the passphrase or recovery key for this archived vault.' : privateSpace ? 'Your browser encrypts your personal files before upload.' : familySpace ? 'Shared files for family members with access.' : target ? `Files shared between the admin and ${esc(target.name)}.` : 'Files shared between you and the admin.';
-  const actions = archive || fileView !== 'browse' || (privateSpace && !vaultKey) ? '' : `<button class="button secondary" data-action="new-folder" ${transfer ? 'disabled' : ''}>${icon('folder', 19)} New folder</button>
-    <button class="button primary" data-action="upload" ${transfer ? 'disabled' : ''}>${icon('upload', 19)} Upload files</button><input type="file" id="file-picker" multiple hidden>
-    <button class="button secondary" data-action="upload-folder" ${transfer ? 'disabled' : ''}>${icon('upload', 18)} Upload folder</button><input type="file" id="folder-picker" webkitdirectory multiple hidden>`;
+  const actions = familySpace || archive || fileView !== 'browse' || (privateSpace && !vaultKey) ? '' : fileActions();
   const lockButton = privateSpace && vaultKey ? `<button class="button secondary" data-action="lock" ${transfer ? 'disabled' : ''}>${icon('lock', 17)} Lock vault</button>` : '';
   const security = page === 'private' && vaultKey ? `<button class="button secondary" data-action="vault-security" ${transfer ? 'disabled' : ''}>${icon('settings', 18)} Vault security</button>` : '';
   const back = archive ? '<button class="button secondary" data-page="private">Back to My files</button>' : '';
-  const familySettings = familySpace && isAdmin() ? `<button class="button secondary" data-action="family-quota">${icon('settings', 18)} Set quota</button>` : '';
-  const usage = familySpace ? quotaBar(data.familyUsed, data.familyQuota) : quotaBar(data.used, data.user.quota);
+  const usage = familySpace ? familyStorage() : quotaBar(data.used, data.user.quota);
   const vault = privateSpace ? selectedVault() : null;
   const locked = privateSpace ? `<section class="panel vault-panel"><span class="vault-icon">${icon('lock', 31)}</span><h2>${vault.salt ? 'Your vault is locked' : 'Set up your private vault'}</h2>
     <p>${vault.salt ? 'Unlock with your vault passphrase.' : 'Choose a separate passphrase for your files. You’ll also get a recovery key to save.'}</p><button class="button primary" data-action="vault">${vault.salt ? 'Unlock vault' : 'Set up vault'}</button>
     ${archive && vault.recoveryWrap ? '<button class="button text-button" data-action="vault-recover">Use recovery key</button>' : !archive && vault.salt ? '<button class="button text-button" data-action="vault-forgot">Forgot vault passphrase?</button>' : ''}</section>` : '';
-  return `${pageTitle(name, description, back + security + lockButton + familySettings + actions)}${exchange && target && !target.exchange ? '<div class="access-banner">Guest access is disabled. You can re-enable it in People & access.</div>' : ''}${usage}${transferBar()}${privateSpace && !vaultKey ? locked : fileTable()}${page === 'private' ? archiveList() : ''}`;
+  return `${pageTitle(name, description, back + security + lockButton + actions)}${exchange && target && !target.exchange ? '<div class="access-banner">Guest access is disabled. You can re-enable it in People & access.</div>' : ''}${usage}${transferBar()}${privateSpace && !vaultKey ? locked : fileTable()}${page === 'private' ? archiveList() : ''}`;
 }
 
 function render() {
@@ -459,7 +594,7 @@ function render() {
   document.querySelector('#search')?.addEventListener('input', event => {
     search = event.target.value;
     selectedFiles.clear();
-    document.querySelector('#rows').innerHTML = page === 'overview' || page === 'people' ? personRows() : fileRows();
+    document.querySelector('#rows').innerHTML = page === 'overview' ? overviewPeople() : page === 'people' ? personRows() : fileRows();
     updateFileSelection();
     updateEmptyState();
   });
@@ -545,7 +680,10 @@ async function navigate(next) {
       return;
     }
   }
-  if (page !== next && isVaultPage()) clearVaultKey();
+  if (page !== next) {
+    uploadReport = null;
+    if (isVaultPage()) clearVaultKey();
+  }
   page = next;
   folderId = null;
   fileView = 'browse';
@@ -729,7 +867,7 @@ function forgotVault() {
   const vault = data.vault;
   const recover = vault.recoveryWrap ? '<button class="button primary" data-action="vault-recover">Use recovery key</button>' : '';
   const hasItems = vault.fileCount || vault.folderCount;
-  const details = hasItems ? 'Starting fresh moves the existing encrypted folders and files into an archive. You can unlock that archive later with its original credentials.' : 'You can reset this empty vault using your Family Drive sign-in password.';
+  const details = hasItems ? 'Starting fresh moves the existing encrypted folders and files into an archive. You can unlock that archive later with its original credentials.' : 'You can reset this empty vault using your SpareDrive sign-in password.';
   showVaultDialog('Forgot vault passphrase?', details,
     `<div class="dialog-actions"><button class="button ${recover ? 'secondary' : 'primary'}" data-action="vault-reset">${hasItems ? 'Start fresh and keep archive' : 'Reset empty vault'}</button>${recover}</div>`);
 }
@@ -739,7 +877,7 @@ function resetVaultDialog() {
   const hasItems = current.fileCount || current.folderCount;
   const help = hasItems ? 'Your existing folders and files will move to a locked archive. Enter your sign-in password to continue and create a fresh vault.' : 'Enter your sign-in password to clear the vault settings and choose a new passphrase.';
   formDialog('Reset private vault', help,
-    '<label>Family Drive sign-in password<input name="password" type="password" autocomplete="current-password" required></label>',
+    '<label>SpareDrive sign-in password<input name="password" type="password" autocomplete="current-password" required></label>',
     hasItems ? 'Archive and reset' : 'Reset vault', async values => {
       const result = await api('vault/reset', { method: 'POST', data: { password: values.password, revision: current.revision } });
       clearVaultKey();
@@ -808,24 +946,50 @@ async function createFolder(name, parent = folderId) {
   return item.id;
 }
 
+function sendUploadChunk(path, packet, onProgress, onSent) {
+  return new Promise((resolve, reject) => {
+    const request = new XMLHttpRequest();
+    request.open('PUT', `/api/${path}`);
+    request.responseType = 'json';
+    request.setRequestHeader('X-Family-Drive', '1');
+    request.setRequestHeader('Content-Type', 'application/octet-stream');
+    request.upload.addEventListener('progress', event => onProgress(event.loaded / packet.byteLength));
+    request.upload.addEventListener('load', onSent);
+    request.addEventListener('load', () => {
+      const result = request.response;
+      if (request.status >= 200 && request.status < 300 && Number.isSafeInteger(result?.received)) resolve(result);
+      else reject(Object.assign(new Error(result?.error || 'SpareDrive could not save the file.'), { status: request.status }));
+    });
+    request.addEventListener('error', () => reject(new Error('Connection lost while uploading.')));
+    request.addEventListener('abort', () => reject(new Error('The upload was interrupted.')));
+    request.send(packet);
+  });
+}
+
 async function upload(selected, withFolders = false, success = '') {
   if (transfer) return;
+  if (familyQuotaMissing()) throw new Error('An administrator must set a shared storage quota before files can be uploaded.');
   const currentSpace = space();
   const uploadFolder = folderId;
   const pathIds = new Map([['', uploadFolder]]);
   const key = currentSpace === 'private' ? vaultKey : null;
   if (currentSpace === 'private' && !key) throw new Error('Unlock your vault first.');
-  transfer = { label: 'Preparing upload…', percent: 0 };
+  uploadReport = null;
+  const batch = {
+    kind: 'upload', page, user: data.user.id, total: selected.length,
+    totalBytes: selected.reduce((total, file) => total + file.size, 0),
+    saved: 0, savedBytes: 0, failures: [], current: null,
+  };
+  transfer = batch;
   render();
-  let done = 0;
-  const errors = [];
   try {
     for (const local of selected) {
       const file = { id: newId(), size: local.size, space: currentSpace, folderId: uploadFolder };
       if (key) file.revision = data.vault.revision;
       let registered = false;
-      const label = `Uploading ${local.name}`;
-      updateProgress(label, 0);
+      const item = { name: withFolders ? local.webkitRelativePath : local.name, size: local.size, sent: 0, phase: 'Preparing file…' };
+      batch.current = item;
+      updateUploadPanel(batch);
       try {
         if (withFolders) {
           const parts = local.webkitRelativePath.split('/').slice(0, -1);
@@ -844,32 +1008,53 @@ async function upload(selected, withFolders = false, success = '') {
         let index = 0;
         for (let pos = 0; pos < file.size || (key && index === 0);) {
           const end = Math.min(pos + data.chunkSize, file.size);
+          item.phase = key ? 'Encrypting in your browser…' : 'Reading file…';
+          updateUploadPanel(batch);
           const bytes = await local.slice(pos, end).arrayBuffer();
           const packet = key ? await seal(key, bytes, fileContext(data.user.id, file, index)) : bytes;
-          const result = await api(`uploads/${file.id}/${offset}`, { method: 'PUT', binary: packet });
+          item.phase = 'Sending to SpareDrive…';
+          updateUploadPanel(batch);
+          const result = await sendUploadChunk(`uploads/${file.id}/${offset}`, packet, fraction => {
+            item.sent = Math.min(end, pos + Math.floor((end - pos) * fraction));
+            updateUploadPanel(batch);
+          }, () => {
+            item.sent = end;
+            item.phase = end === file.size ? 'Waiting for drive confirmation…' : 'Saving this part to the drive…';
+            updateUploadPanel(batch);
+          });
           offset = result.received;
           index += 1;
           pos = end;
-          updateProgress(label, file.size ? pos / file.size : 1);
         }
-        done += 1;
+        batch.saved += 1;
+        batch.savedBytes += file.size;
+        item.sent = file.size;
+        item.saved = true;
+        item.phase = 'Saved to the drive';
+        updateUploadPanel(batch);
       } catch (error) {
+        item.sent = 0;
+        item.phase = 'Upload failed';
+        updateUploadPanel(batch);
         if (registered) await api(`uploads/${file.id}`, { method: 'DELETE' }).catch(() => {});
-        errors.push(`${local.name}: ${error.message}`);
+        batch.failures.push({ name: item.name, message: error.message });
         if (error.status === 401) break;
       }
     }
   } finally {
+    batch.current = null;
     transfer = null;
-    await refresh();
-    if (page === 'family' && !data.user?.familyAccess) await navigate('private');
-    else {
-      await loadFiles();
+    if (data.user?.id === batch.user) uploadReport = batch;
+    try {
+      await refresh();
+      if (page === 'family' && !data.user?.familyAccess) await navigate('private');
+      else await loadFiles();
+    } finally {
       render();
     }
   }
-  if (errors.length) notice(`${done ? `${done} uploaded. ` : ''}${errors[0]}${errors.length > 1 ? ` (${errors.length} failed)` : ''}`, true);
-  else notice(success || `${done} ${done === 1 ? 'file' : 'files'} uploaded.`);
+  if (batch.failures.length) notice('Some files could not be uploaded. See the upload results.', true);
+  else notice(success || `${batch.saved} ${batch.saved === 1 ? 'file' : 'files'} uploaded.`);
 }
 
 async function readFileSlice(file, start, end, key, user, chunkSize) {
@@ -1105,6 +1290,10 @@ document.addEventListener('click', event => {
   else if (action === 'add-person') addPerson();
   else if (action === 'edit-person') editPerson(id);
   else if (action === 'family-quota') setFamilyQuota();
+  else if (action === 'dismiss-upload') {
+    uploadReport = null;
+    button.closest('.upload-result').remove();
+  }
   else if (action === 'settings') accountSettings();
   else if (action === 'vault') vaultDialog();
   else if (action === 'vault-forgot') forgotVault();
@@ -1210,6 +1399,10 @@ document.addEventListener('dragover', event => {
   const target = dropTarget(event);
   if (!target) return;
   event.preventDefault();
+  if (!draggedItem && familyQuotaMissing()) {
+    event.dataTransfer.dropEffect = 'none';
+    return;
+  }
   event.dataTransfer.dropEffect = draggedItem ? 'move' : 'copy';
   if (!target.classList.contains('drop-ready')) {
     document.querySelector('.drop-ready')?.classList.remove('drop-ready');
@@ -1257,5 +1450,5 @@ try {
   await refresh();
   await navigate(isAdmin() ? 'overview' : 'private');
 } catch (error) {
-  app.innerHTML = `<main class="loading" role="alert"><h1>Family Drive is unavailable</h1><p>${esc(error.message)}</p><p>Check the host computer and reload this page.</p></main>`;
+  app.innerHTML = `<main class="loading" role="alert"><h1>SpareDrive is unavailable</h1><p>${esc(error.message)}</p><p>Check the host computer and reload this page.</p></main>`;
 }
