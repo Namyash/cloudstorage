@@ -12,6 +12,14 @@ let vaultTimer;
 let lastVaultActivity = 0;
 let files = [];
 let search = '';
+let fileSort = 'newest';
+const selectedFiles = new Set();
+const fileSorts = {
+  newest: ['Newest first', (a, b) => b.created - a.created],
+  oldest: ['Oldest first', (a, b) => a.created - b.created],
+  name: ['Name A–Z', (a, b) => a.name.localeCompare(b.name, undefined, { numeric: true })],
+  size: ['Largest first', (a, b) => b.size - a.size],
+};
 let transfer = null;
 let toastTimer;
 
@@ -103,6 +111,7 @@ const isVaultPage = () => page === 'private' || isArchive();
 const selectedVault = () => isArchive() ? data.archives.find(item => page === `archive:${item.id}`) : data.vault;
 
 function clearVaultKey() {
+  selectedFiles.clear();
   clearTimeout(vaultTimer);
   vaultKey = null;
 }
@@ -246,18 +255,40 @@ function quotaBar(used, quota) {
     <progress max="100" value="${ratio(used, quota)}" aria-label="Storage used"></progress></div>`;
 }
 
-function fileRows() {
+function visibleFiles() {
   const term = search.toLowerCase().trim();
-  const filtered = files.filter(file => file.name.toLowerCase().includes(term));
-  if (!filtered.length) return `<tr><td colspan="4" class="empty-row">${term ? 'No matching files' : 'No files yet'}</td></tr>`;
-  return filtered.map(file => `<tr><td><div class="person-cell"><span class="file-glyph">${icon('file', 19)}</span><div><strong class="file-name">${esc(file.name)}</strong>${!isVaultPage() ? `<small>${esc(file.by)}</small>` : ''}</div></div></td>
+  return files.filter(file => file.name.toLowerCase().includes(term)).sort(fileSorts[fileSort][1]);
+}
+
+function fileRows() {
+  const visible = visibleFiles();
+  if (!visible.length) return `<tr><td colspan="${isArchive() ? 4 : 5}" class="empty-row">${search.trim() ? 'No matching files' : 'No files yet'}</td></tr>`;
+  return visible.map(file => `<tr>${isArchive() ? '' : `<td class="file-selection">${file.canDelete ? `<input type="checkbox" data-select-file="${file.id}" aria-label="Select ${esc(file.name)}" ${selectedFiles.has(file.id) ? 'checked' : ''} ${transfer ? 'disabled' : ''}>` : ''}</td>`}<td><div class="person-cell"><span class="file-glyph">${icon('file', 19)}</span><div><strong class="file-name">${esc(file.name)}</strong>${!isVaultPage() ? `<small>${esc(file.by)}</small>` : ''}</div></div></td>
     <td>${formatSize(file.size)}</td><td>${formatDate(file.created)}</td><td class="file-actions"><button class="icon-button" data-action="download" data-id="${file.id}" title="Download" aria-label="Download ${esc(file.name)}" ${file.damaged || transfer ? 'disabled' : ''}>${icon('download', 19)}</button>
+    ${file.canDelete && !file.damaged ? `<button class="icon-button" data-action="rename" data-id="${file.id}" title="Rename" aria-label="Rename ${esc(file.name)}" ${transfer ? 'disabled' : ''}>${icon('edit', 18)}</button>` : ''}
     ${file.canDelete ? `<button class="icon-button danger-icon" data-action="remove" data-id="${file.id}" title="Delete" aria-label="Delete ${esc(file.name)}" ${transfer ? 'disabled' : ''}>${icon('trash', 18)}</button>` : ''}</td></tr>`).join('');
 }
 
 function fileTable() {
-  return `<section class="panel files-panel"><div class="panel-heading"><div><h2>Files</h2><p>${files.length} ${files.length === 1 ? 'file' : 'files'}</p></div><label class="search">${icon('search', 17)}<span class="visually-hidden">Search files</span><input id="search" type="search" placeholder="Search files" value="${esc(search)}"></label></div>
-    <div class="table-scroll"><table><thead><tr><th>Name</th><th>Size</th><th>Added</th><th><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="rows">${fileRows()}</tbody></table></div></section>`;
+  return `<section class="panel files-panel"><div class="panel-heading"><div><h2>Files</h2><p>${files.length} ${files.length === 1 ? 'file' : 'files'}</p></div><div class="file-tools">
+    <label class="search">${icon('search', 17)}<span class="visually-hidden">Search files</span><input id="search" type="search" placeholder="Search files" value="${esc(search)}"></label>
+    <select id="file-sort" aria-label="Sort files">${Object.entries(fileSorts).map(([key, [label]]) => `<option value="${key}" ${key === fileSort ? 'selected' : ''}>${label}</option>`).join('')}</select>
+    ${isArchive() ? '' : '<button id="delete-selected" class="button secondary" data-action="remove-selected" hidden></button>'}</div></div>
+    <div class="table-scroll"><table><thead><tr>${isArchive() ? '' : '<th class="file-selection"><input type="checkbox" id="select-visible" aria-label="Select all eligible files shown"></th>'}<th>Name</th><th>Size</th><th>Added</th><th><span class="visually-hidden">Actions</span></th></tr></thead><tbody id="rows">${fileRows()}</tbody></table></div></section>`;
+}
+
+function updateFileSelection() {
+  const selectAll = document.querySelector('#select-visible');
+  if (!selectAll) return;
+  const checkboxes = [...document.querySelectorAll('[data-select-file]')];
+  const count = checkboxes.filter(checkbox => checkbox.checked).length;
+  selectAll.disabled = Boolean(transfer) || !checkboxes.length;
+  selectAll.checked = count > 0 && count === checkboxes.length;
+  selectAll.indeterminate = count > 0 && count < checkboxes.length;
+  const remove = document.querySelector('#delete-selected');
+  remove.hidden = !count;
+  remove.disabled = Boolean(transfer);
+  remove.textContent = `Delete selected (${count})`;
 }
 
 function transferBar() {
@@ -312,8 +343,31 @@ function render() {
   else layout(workspace(), workspaceName());
   document.querySelector('#search')?.addEventListener('input', event => {
     search = event.target.value;
+    selectedFiles.clear();
     document.querySelector('#rows').innerHTML = page === 'overview' || page === 'people' ? personRows() : fileRows();
+    updateFileSelection();
   });
+  document.querySelector('#file-sort')?.addEventListener('change', event => {
+    fileSort = event.target.value;
+    document.querySelector('#rows').innerHTML = fileRows();
+    updateFileSelection();
+  });
+  document.querySelector('#rows')?.addEventListener('change', event => {
+    const id = event.target.dataset.selectFile;
+    if (!id) return;
+    if (event.target.checked) selectedFiles.add(id);
+    else selectedFiles.delete(id);
+    updateFileSelection();
+  });
+  document.querySelector('#select-visible')?.addEventListener('change', event => {
+    selectedFiles.clear();
+    for (const checkbox of document.querySelectorAll('[data-select-file]')) {
+      checkbox.checked = event.target.checked;
+      if (checkbox.checked) selectedFiles.add(checkbox.dataset.selectFile);
+    }
+    updateFileSelection();
+  });
+  updateFileSelection();
   document.querySelector('#file-picker')?.addEventListener('change', event => {
     if (event.target.files.length) guarded(() => upload([...event.target.files]));
   });
@@ -361,6 +415,7 @@ async function navigate(next) {
   if (page !== next && isVaultPage()) clearVaultKey();
   page = next;
   search = '';
+  selectedFiles.clear();
   await loadFiles();
   render();
 }
@@ -681,6 +736,44 @@ function confirmDelete(file) {
   dialog.querySelector('button[type="submit"]').classList.replace('primary', 'danger');
 }
 
+function renameFile(file) {
+  if (!file?.canDelete || file.damaged) return;
+  const form = formDialog('Rename file', '', `<label>Filename<input name="name" value="${esc(file.name)}" maxlength="255" required></label>`,
+    'Save name', async values => {
+      const name = values.name.trim();
+      if (!name || /[\x00-\x1f\x7f/\\]/.test(name) || name === '.' || name === '..') throw new Error('Enter a valid filename.');
+      const fields = { label: name };
+      if (page === 'private') {
+        if (!vaultKey) throw new Error('Unlock your vault before renaming.');
+        fields.revision = data.vault.revision;
+        fields.label = await sealText(vaultKey, name, fileContext(data.user.id, file, 'name'));
+      }
+      await api(`files/${file.id}`, { method: 'PATCH', data: fields });
+      dialog.close();
+      await loadFiles();
+      render();
+      notice('File renamed.');
+    });
+  form.elements.name.focus();
+  form.elements.name.select();
+}
+
+function confirmBulkDelete() {
+  const ids = visibleFiles().filter(file => file.canDelete && selectedFiles.has(file.id)).map(file => file.id);
+  if (!ids.length) return;
+  const label = ids.length === 1 ? '1 file' : `${ids.length} files`;
+  formDialog(`Delete ${label}?`, 'This permanently removes these files from Family Drive.', '', 'Delete selected', async () => {
+    const result = await api('files/bulk-delete', { method: 'POST', data: { ids } });
+    selectedFiles.clear();
+    dialog.close();
+    await refresh();
+    await loadFiles();
+    render();
+    notice(`${result.deleted} ${result.deleted === 1 ? 'file' : 'files'} deleted.`);
+  });
+  dialog.querySelector('button[type="submit"]').classList.replace('primary', 'danger');
+}
+
 function accountSettings() {
   formDialog('Account', `${esc(data.user.name)} · @${esc(data.user.username)}`,
     '<label>Current password<input type="password" name="current" required autocomplete="current-password"></label><label>New password<input type="password" name="password" required autocomplete="new-password"></label>',
@@ -730,7 +823,9 @@ document.addEventListener('click', event => {
   });
   else if (action === 'upload') document.querySelector('#file-picker').click();
   else if (action === 'download') guarded(() => startDownload(files.find(file => file.id === id)));
+  else if (action === 'rename') renameFile(files.find(file => file.id === id));
   else if (action === 'remove') confirmDelete(files.find(file => file.id === id));
+  else if (action === 'remove-selected') confirmBulkDelete();
   else if (action === 'lock') {
     clearVaultKey();
     guarded(() => navigate(page));

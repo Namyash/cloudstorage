@@ -128,6 +128,14 @@ def encoded(value, minimum, maximum):
     return value
 
 
+def file_label(space, label):
+    if space == 'private':
+        return encoded(label, 29, 1052)
+    if not isinstance(label, str) or not 1 <= len(label) <= 255 or re.search(r'[\x00-\x1f\x7f/\\]', label) or label in ('.', '..'):
+        abort(400, 'Invalid filename.')
+    return label
+
+
 def guest_expiry(value, previous=None):
     if value in (None, ''):
         return None
@@ -663,6 +671,17 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             abort(404, 'File not found.')
         return row
 
+    def can_manage_file(user, row):
+        return row['archive_id'] is None and (row['owner'] == user['id'] or user['role'] == 'admin')
+
+    def managed_file(fid):
+        row = file_row(fid)
+        if row['archive_id'] is not None:
+            abort(409, 'Archived files are read-only.')
+        if not can_manage_file(g.user, row):
+            abort(403, 'Only the uploader or admin can manage this shared file.')
+        return row
+
     @app.get('/api/files')
     def list_files():
         user = require_user()
@@ -679,7 +698,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         else:
             abort(404, 'Space not found.')
         return jsonify(files=[{'id': row['id'], 'label': row['label'], 'size': row['size'], 'created': row['created'],
-                               'by': row['name'], 'canDelete': row['archive_id'] is None and (row['owner'] == user['id'] or user['role'] == 'admin')} for row in rows])
+                               'by': row['name'], 'canDelete': can_manage_file(user, row)} for row in rows])
 
     @app.post('/api/uploads')
     def create_upload():
@@ -689,13 +708,9 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         size = number(data.get('size'), 'file size')
         if not isinstance(fid, str) or not ID.fullmatch(fid):
             abort(400, 'Invalid file identifier.')
-        if space == 'private':
-            encoded(label, 29, 1052)
-        elif can_access(user, space):
-            if not isinstance(label, str) or not 1 <= len(label) <= 255 or re.search(r'[\x00-\x1f\x7f/\\]', label) or label in ('.', '..'):
-                abort(400, 'Invalid filename.')
-        else:
+        if space != 'private' and not can_access(user, space):
             abort(404, 'Space not found.')
+        file_label(space, label)
         chunks = max(1, (size + CHUNK - 1) // CHUNK)
         stored = size + (chunks * OVERHEAD if space == 'private' else 0)
         expire_uploads()
@@ -773,17 +788,40 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         except FileNotFoundError:
             abort(404, 'The file is missing from the drive.')
 
+    @app.patch('/api/files/<fid>')
+    def rename_file(fid):
+        data = json_body()
+        with write() as db:
+            row = managed_file(fid)
+            label = file_label(row['space'], data.get('label'))
+            if row['space'] == 'private':
+                current = one('SELECT vault_revision FROM users WHERE id = ?', (g.user['id'],))
+                if type(data.get('revision')) is not int or data['revision'] != current['vault_revision']:
+                    abort(409, 'The vault changed. Reload and unlock it before renaming.')
+            db.execute('UPDATE files SET label = ?, modified = ? WHERE id = ?', (label, now(), fid))
+        return jsonify(ok=True)
+
+    def remove_files(ids):
+        with write() as db:
+            for fid in ids:
+                managed_file(fid)
+                db.execute("UPDATE files SET state = 'removed' WHERE id = ?", (fid,))
+        clean_removed()
+
     @app.delete('/api/files/<fid>')
     def remove_file(fid):
-        with write() as db:
-            row = file_row(fid)
-            if row['owner'] != g.user['id'] and g.user['role'] != 'admin':
-                abort(403, 'Only the uploader or admin can remove this shared file.')
-            if row['archive_id'] is not None:
-                abort(409, 'Archived files are read-only.')
-            db.execute("UPDATE files SET state = 'removed' WHERE id = ?", (fid,))
-        clean_removed()
+        remove_files([fid])
         return jsonify(ok=True)
+
+    @app.post('/api/files/bulk-delete')
+    def bulk_delete():
+        require_user()
+        ids = json_body().get('ids')
+        if not isinstance(ids, list) or not ids or any(not isinstance(fid, str) or not ID.fullmatch(fid) for fid in ids):
+            abort(400, 'Select valid files to delete.')
+        unique_ids = list(dict.fromkeys(ids))
+        remove_files(unique_ids)
+        return jsonify(ok=True, deleted=len(unique_ids))
 
     return app
 

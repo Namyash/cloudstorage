@@ -151,6 +151,10 @@ progress::-moz-progress-bar { background: #16836e; border-radius: 20px; }
 .access-banner { background: #ecf6f0; color: #285c49; border: 1px solid #d3e8dc; padding: 10px 13px; border-radius: 8px; margin-bottom: 12px; font-size: .89rem; }
 .file-glyph { width: 34px; height: 34px; display: grid; place-items: center; border-radius: 9px; background: #e7f6ee; color: #26745c; flex-shrink: 0; }
 .file-name { overflow-wrap: anywhere; }
+.file-tools { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 8px; }
+.file-tools select { min-height: 38px; padding: 0 8px; border: 1px solid #dbe5df; border-radius: 8px; background: var(--white); color: var(--ink); font-size: .87rem; }
+.file-selection { width: 1%; padding-right: 2px; }
+.file-selection input { display: block; width: 17px; height: 17px; accent-color: #16836e; }
 .file-actions { min-width: 94px; white-space: nowrap; }
 .transfer { margin-bottom: 15px; padding: 13px 16px; }
 .transfer span { display: block; overflow-wrap: anywhere; font-size: .88rem; font-weight: 650; margin-bottom: 8px; }
