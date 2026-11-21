@@ -7,7 +7,7 @@ Family Drive is a browser-based file server for a drive connected to your home c
 With Python 3.10 or newer, install the wheel supplied with the release. Then run Family Drive and open `http://127.0.0.1:8765/`.
 
 ```powershell
-py -3 -m pip install .\family_drive-0.1.2-py3-none-any.whl
+py -3 -m pip install .\family_drive-0.1.3-py3-none-any.whl
 py -3 -m family_drive
 ```
 
@@ -30,7 +30,7 @@ On the host computer, sign in as the admin and open **Storage explorer → Chang
 ## Storage and access
 
 - **My files.** Every account has a personal vault. The browser encrypts filenames and file contents before sending them to the drive. Each person sets a separate vault passphrase. Save the recovery key generated during setup. The vault locks after 10 minutes of inactivity or when you leave the vault. A sign-in password reset keeps the original vault passphrase.
-- **Family space.** Admins and family accounts can read and upload here. The admin sets a separate shared quota. The uploader or admin can delete shared files.
+- **Family space.** The admin always has access and can grant or revoke access for each member in **People & access → Manage account**. **Allow Family space access** controls shared files. **Allow sign-in** controls the entire account. Existing family members start with shared access enabled. The admin sets a separate shared quota, and the uploader or admin can delete shared files.
 - **Guest exchange.** The admin can enable a separate shared folder for a guest, give their account an expiry, or pause their access. Guests have personal storage even when their exchange folder is disabled. A user's own guest-exchange uploads count against that user's quota.
 - **Storage limits.** Quotas are in decimal GB. The server reserves space when an upload begins, checks available disk space, and keeps 512 MiB of free disk headroom. Private files use a small amount of extra space for encryption. Stale uploads are cleared after 24 hours at startup or when the next upload begins.
 - **Drive usage.** The overview shows the storage folder, actual free disk space, total assigned quotas, and the amount you can still allocate. Each household runs its own instance and uses the drive it chooses.

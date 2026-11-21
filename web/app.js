@@ -167,7 +167,7 @@ function navigation() {
   const items = [];
   if (isAdmin()) items.push(['overview', 'Overview', 'overview'], ['people', 'People & access', 'people']);
   items.push(['private', 'My files', 'lock']);
-  if (data.user.role !== 'guest') items.push(['family', 'Family space', 'folder']);
+  if (data.user.familyAccess) items.push(['family', 'Family space', 'folder']);
   if ((isAdmin() && data.people.some(person => person.role === 'guest')) || data.user.exchange) items.push(['exchange', 'Guest exchange', 'exchange']);
   return items;
 }
@@ -207,13 +207,13 @@ function personRows() {
     return `<tr><td><div class="person-cell">${avatar(person)}<div><strong>${esc(person.name)}</strong><small>@${esc(person.username)}${person.id === data.user.id ? ' · You' : ''}</small></div></div></td>
       <td><span class="badge role-${person.role}">${roleName(person.role)}</span></td>
       <td><div class="row-usage"><span><strong>${formatSize(person.used)}</strong><span> / ${formatSize(person.quota)}</span></span><progress max="100" value="${ratio(person.used, person.quota)}" aria-label="Quota usage"></progress></div></td>
-      <td><span class="status ${color}"><i></i>${label}</span></td>
+      <td><span class="status ${color}"><i></i>${label}</span>${person.role === 'family' ? `<div class="field-note">Family space ${person.familyAccess ? 'allowed' : 'blocked'}</div>` : ''}</td>
       <td><button class="icon-button row-action" data-action="edit-person" data-id="${person.id}" title="Manage ${esc(person.name)}" aria-label="Manage ${esc(person.name)}">${icon('edit', 17)}</button></td></tr>`;
   }).join('');
 }
 
 function peopleTable() {
-  return `<section class="panel people-panel" aria-labelledby="people-title"><div class="panel-heading"><div><h2 id="people-title">People & access</h2><p>Manage accounts, storage quotas, and guest permissions.</p></div>
+  return `<section class="panel people-panel" aria-labelledby="people-title"><div class="panel-heading"><div><h2 id="people-title">People & access</h2><p>Manage accounts, storage quotas, and shared-space access.</p></div>
     <label class="search">${icon('search', 17)}<span class="visually-hidden">Search people</span><input id="search" type="search" placeholder="Search people" value="${esc(search)}"></label></div>
     <div class="table-scroll"><table><thead><tr><th scope="col">Name</th><th scope="col">Role</th><th scope="col">Storage</th><th scope="col">Status</th><th scope="col"><span class="visually-hidden">Manage</span></th></tr></thead><tbody id="rows">${personRows()}</tbody></table></div></section>`;
 }
@@ -350,6 +350,14 @@ async function refresh() {
 
 async function navigate(next) {
   if (transfer) { notice('Wait for the current transfer to finish.'); return; }
+  if (next === 'family') {
+    await refresh();
+    if (!data.user?.familyAccess) {
+      await navigate('private');
+      if (data.user) notice('Family space access is blocked.', true);
+      return;
+    }
+  }
   if (page !== next && isVaultPage()) clearVaultKey();
   page = next;
   search = '';
@@ -408,16 +416,25 @@ function showCredential(account) {
   dialog.querySelector('[data-action="copy"]').focus();
 }
 
+function familyPermission(allowed) {
+  return `<label class="checkbox"><input type="checkbox" name="familyAccess" ${allowed ? 'checked' : ''}><span>Allow Family space access<small>Lets this member open and upload shared files.</small></span></label>`;
+}
+
 function addPerson() {
   const form = formDialog('Add person', 'Give a family member or guest their own login and storage quota.',
     `<label>Display name<input name="name" required maxlength="60"></label>${usernameField}
-    <div class="form-grid"><label>Role<select name="role"><option value="family">Family member</option><option value="guest">Guest</option></select></label>${quotaField(null)}</div>${guestFields({ role: 'family' })}`, 'Create account', async values => {
-    const account = await api('people', { method: 'POST', data: { ...values, quota: Math.round(Number(values.quota) * GB), ...guestValues(values) } });
+    <div class="form-grid"><label>Role<select name="role"><option value="family">Family member</option><option value="guest">Guest</option></select></label>${quotaField(null)}</div><div class="family-fields">${familyPermission(true)}</div>${guestFields({ role: 'family' })}`, 'Create account', async values => {
+    const { familyAccess, ...fields } = values;
+    const account = await api('people', { method: 'POST', data: { ...fields, quota: Math.round(Number(values.quota) * GB),
+      ...(values.role === 'family' ? { familyAccess: familyAccess === 'on' } : guestValues(values)) } });
     await refresh();
     render();
     showCredential(account);
   });
-  form.elements.role.addEventListener('change', () => { form.querySelector('.guest-fields').hidden = form.elements.role.value !== 'guest'; });
+  form.elements.role.addEventListener('change', () => {
+    form.querySelector('.guest-fields').hidden = form.elements.role.value !== 'guest';
+    form.querySelector('.family-fields').hidden = form.elements.role.value !== 'family';
+  });
 }
 
 function editPerson(id) {
@@ -425,9 +442,11 @@ function editPerson(id) {
   if (!person) return;
   formDialog('Manage account', `${esc(person.name)} · @${esc(person.username)} · ${roleName(person.role)}`,
     `${quotaField(person.quota)}<span class="field-note">${formatSize(person.used)} in use</span>
-    ${person.role !== 'admin' ? `<label class="checkbox"><input type="checkbox" name="active" ${person.active ? 'checked' : ''}><span>Allow sign-in</span></label>` : ''}
+    ${person.role !== 'admin' ? `<label class="checkbox"><input type="checkbox" name="active" ${person.active ? 'checked' : ''}><span>Allow sign-in<small>Controls access to the entire account.</small></span></label>` : ''}
+    ${person.role === 'family' ? familyPermission(person.familyAccess) : ''}
     ${person.role === 'guest' ? guestFields(person) : ''}`, 'Save changes', async values => {
       const payload = { quota: Math.round(Number(values.quota) * GB), active: person.role === 'admin' || values.active === 'on' };
+      if (person.role === 'family') payload.familyAccess = values.familyAccess === 'on';
       if (person.role === 'guest') Object.assign(payload, guestValues(values));
       await api(`people/${id}`, { method: 'PATCH', data: payload });
       dialog.close();
@@ -616,8 +635,11 @@ async function upload(selected) {
   } finally {
     transfer = null;
     await refresh();
-    await loadFiles();
-    render();
+    if (page === 'family' && !data.user?.familyAccess) await navigate('private');
+    else {
+      await loadFiles();
+      render();
+    }
   }
   if (errors.length) notice(`${done ? `${done} uploaded. ` : ''}${errors[0]}${errors.length > 1 ? ` (${errors.length} failed)` : ''}`, true);
   else notice(`${done} ${done === 1 ? 'file' : 'files'} uploaded.`);
@@ -677,6 +699,9 @@ async function guarded(action) {
       if (dialog.open) dialog.close();
       await refresh();
       render();
+    } else if (error.status === 404 && page === 'family') {
+      await refresh();
+      if (!data.user?.familyAccess) await navigate('private');
     }
   }
 }

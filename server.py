@@ -190,6 +190,8 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         user_columns = {row['name'] for row in db.execute('PRAGMA table_info(users)')}
         if 'username_key' not in user_columns:
             db.execute('ALTER TABLE users ADD COLUMN username_key TEXT')
+        if 'family_access' not in user_columns:
+            db.execute('ALTER TABLE users ADD COLUMN family_access INTEGER NOT NULL DEFAULT 1')
         users_to_index = db.execute('SELECT id, username FROM users WHERE username_key IS NULL').fetchall()
         db.executemany('UPDATE users SET username_key = ? WHERE id = ?',
                        ((username_key(row['username']), row['id']) for row in users_to_index))
@@ -452,7 +454,17 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         return one(sql, args)['amount']
 
     def account(row):
-        return {key: row[key] for key in ('id', 'username', 'name', 'role', 'quota', 'active', 'expires', 'exchange')}
+        return dict({key: row[key] for key in ('id', 'username', 'name', 'role', 'quota', 'active', 'expires', 'exchange')},
+                    familyAccess=family_access(row))
+
+    def family_access(user):
+        return user['role'] == 'admin' or (user['role'] == 'family' and bool(user['family_access']))
+
+    def family_permission(data, default):
+        value = data.get('familyAccess', default)
+        if type(value) is not bool:
+            abort(400, 'Choose whether to allow Family Space access.')
+        return int(value)
 
     def vault_info(row):
         return {'salt': row['salt'], 'verifier': row['verifier'],
@@ -472,7 +484,9 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             WHERE v.owner = ? GROUP BY v.id ORDER BY v.created DESC, v.id''', (user['id'],))
         result.update(vault=dict(vault_info(user), revision=user['vault_revision'], fileCount=active_files),
                       archives=[dict(vault_info(row), id=row['id'], created=row['created'], fileCount=row['amount']) for row in archives],
-                      used=usage(owner=user['id']), familyUsed=usage(space='family'), familyQuota=family_quota(), chunkSize=CHUNK)
+                      used=usage(owner=user['id']), chunkSize=CHUNK)
+        if family_access(user):
+            result.update(familyUsed=usage(space='family'), familyQuota=family_quota())
         if user['role'] == 'admin':
             users = connection().execute("SELECT * FROM users ORDER BY role = 'admin' DESC, created, name").fetchall()
             result['people'] = [dict(account(row), used=usage(owner=row['id']), reserved=usage(owner=row['id'], reserved=True)) for row in users]
@@ -483,10 +497,6 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
                                'allocated': allocated, 'allocatableCapacity': capacity,
                                'availableToAllocate': max(0, capacity - allocated),
                                'used': usage(), 'root': str(root), 'reserve': MIN_FREE}
-        else:
-            if user['role'] == 'guest':
-                result.pop('familyUsed')
-                result.pop('familyQuota')
         return jsonify(result)
 
     @app.route('/api/vault', methods=['POST', 'PATCH'])
@@ -559,6 +569,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             abort(400, 'Choose family member or guest.')
         expiry = guest_expiry(data.get('expires')) if role == 'guest' else None
         exchange = int(role == 'guest' and data.get('exchange') is True)
+        shared = family_permission(data, True) if role == 'family' else 0
         temporary = secrets.token_urlsafe(18)
         password = password_hash(temporary)
         uid = secrets.token_hex(16)
@@ -566,8 +577,8 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             check_allocation(quota)
             if one('SELECT 1 FROM users WHERE username_key = ?', (key,)):
                 abort(409, 'That username is already in use.')
-            db.execute('''INSERT INTO users(id, username, username_key, name, role, password, quota, expires, exchange, change_password, created)
-                       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)''', (uid, username, key, name, role, password, quota, expiry, exchange, now()))
+            db.execute('''INSERT INTO users(id, username, username_key, name, role, password, quota, expires, exchange, family_access, change_password, created)
+                       VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 1, ?)''', (uid, username, key, name, role, password, quota, expiry, exchange, shared, now()))
         return jsonify(id=uid, username=username, temporaryPassword=temporary), 201
 
     @app.patch('/api/people/<uid>')
@@ -583,6 +594,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             if uid == actor['id'] and not active:
                 abort(400, 'The admin account must stay active.')
             expires, exchange = user['expires'], bool(user['exchange'])
+            shared = family_permission(data, bool(user['family_access'])) if user['role'] == 'family' else user['family_access']
             if user['role'] == 'guest':
                 if 'expires' in data:
                     expires = guest_expiry(data['expires'], previous=expires)
@@ -590,9 +602,15 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             if quota < usage(owner=uid, reserved=True):
                 abort(409, 'The new quota is below the storage already used or reserved by this account.')
             check_allocation(quota, user['quota'])
-            db.execute('UPDATE users SET quota = ?, active = ?, expires = ?, exchange = ? WHERE id = ?', (quota, active, expires, int(exchange), uid))
+            db.execute('UPDATE users SET quota = ?, active = ?, expires = ?, exchange = ?, family_access = ? WHERE id = ?',
+                       (quota, active, expires, int(exchange), shared, uid))
             if not active:
                 db.execute('DELETE FROM sessions WHERE user_id = ?', (uid,))
+            cancelled = 0
+            if user['role'] == 'family' and (not active or not shared):
+                cancelled = db.execute("UPDATE files SET state = 'removed' WHERE owner = ? AND space = 'family' AND state = 'uploading'", (uid,)).rowcount
+        if cancelled:
+            clean_removed()
         return jsonify(ok=True)
 
     @app.post('/api/people/<uid>/reset')
@@ -625,7 +643,8 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         if space == 'private':
             return False
         if space == 'family':
-            return user['role'] in ('admin', 'family')
+            current = one('SELECT role, family_access FROM users WHERE id = ? AND active = 1', (user['id'],))
+            return current is not None and family_access(current)
         if isinstance(space, str) and space.startswith('exchange:'):
             uid = space.removeprefix('exchange:')
             if user['role'] == 'admin':
@@ -682,6 +701,8 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         expire_uploads()
         with write() as db:
             # Read the latest quota under the same lock that reserves the space.
+            if space == 'family' and not can_access(user, space):
+                abort(404, 'Space not found.')
             current = one('SELECT quota, salt, vault_revision FROM users WHERE id = ?', (user['id'],))
             if space == 'private' and (not current['salt'] or type(data.get('revision')) is not int or data['revision'] != current['vault_revision']):
                 abort(409, 'The vault changed. Reload and unlock it before uploading.')
