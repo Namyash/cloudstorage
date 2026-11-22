@@ -170,7 +170,7 @@ def guest_expiry(value, previous=None):
 
 
 def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup_code_override=None,
-               storage_move=None, storage_status=None):
+               storage_move=None, storage_status=None, setup_in_browser=True):
     root = Path(root).expanduser().resolve()
     if root == root.parent:
         raise ValueError('Choose a dedicated folder on the drive, such as E:\\SpareDriveData.')
@@ -242,7 +242,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         db.execute("INSERT OR IGNORE INTO config VALUES ('family_quota', '0')")
         needs_setup = not db.execute('SELECT 1 FROM users LIMIT 1').fetchone()
     db.close()
-    setup_code = (setup_code_override or secrets.token_hex(12)) if needs_setup else None
+    setup_code = (setup_code_override or secrets.token_hex(12)) if needs_setup and setup_in_browser else None
     app.config['SETUP_CODE'] = setup_code
 
     def connection():
@@ -419,7 +419,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
 
     @app.post('/api/setup')
     def setup():
-        if g.origin != loopback:
+        if not setup_in_browser or g.origin != loopback:
             abort(403, 'Create the first admin account on the computer hosting SpareDrive.')
         if not setup_code or one('SELECT 1 FROM users LIMIT 1'):
             abort(409, 'The admin account already exists.')
@@ -573,8 +573,9 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         user = g.user
         if user is None:
             needs_setup = not one('SELECT 1 FROM users LIMIT 1')
-            return jsonify(user=None, setup=needs_setup and g.origin == loopback,
-                           setupOnHost=needs_setup and g.origin != loopback)
+            can_set_up = setup_in_browser and g.origin == loopback
+            return jsonify(user=None, setup=needs_setup and can_set_up,
+                           setupOnHost=needs_setup and not can_set_up)
         result = {'user': account(user), 'changePassword': bool(user['change_password'])}
         if user['change_password']:
             return jsonify(result)

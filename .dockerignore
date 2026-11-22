@@ -1,0 +1,10 @@
+**
+!Dockerfile
+!requirements.txt
+!backend/
+!backend/*.py
+!frontend/
+!frontend/*.html
+!frontend/*.css
+!frontend/*.js
+!frontend/sparedrive-logo.png

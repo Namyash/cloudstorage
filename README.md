@@ -68,6 +68,10 @@ The default launcher listens only on the host computer. For phones and other com
 
 [Tailscale Serve setup](https://tailscale.com/docs/features/tailscale-serve), [Tailscale access grants](https://tailscale.com/docs/features/access-control/grants).
 
+## Deploy with Coolify
+
+For a Windows home computer with a removable drive, use the [Coolify Windows gateway](deploy/coolify/README.md). The Windows launcher continues to discover drives, manage storage, and serve the existing accounts and files. Coolify manages the browser gateway.
+
 ## Build the package from source
 
 The project separates the browser assets and Python service:
