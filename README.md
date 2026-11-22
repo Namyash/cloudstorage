@@ -18,7 +18,7 @@ The installed package also provides the `sparedrive` command. The existing `fami
 1. Open PowerShell in the project folder and run `npm run dev` with Node.js, npm, and Python 3.10 or newer installed. You can also double-click `Start-Family-Drive.cmd` to launch with Python. The launcher installs Flask and Waitress from PyPI on first use.
 2. Open `http://127.0.0.1:8765/`. The storage explorer shows physical disks and Windows drive letters, including when no eligible storage drive is attached. Connect your data drive and wait for its drive letter to appear. To use the Windows system drive, explicitly select **Include the Windows system drive**.
 3. Enter the setup code printed in the terminal, choose **Browse** on your data drive, and choose or create a dedicated storage folder. A new folder starts with a fresh database. Use the same setup code to create your admin account on the next screen.
-4. On **Overview**, use the pencil next to your admin account to set your personal quota. Open **Family space → Set quota** to assign the household quota. Both start at 0 GB. Use **Add person** to create family or guest accounts and enter their quotas. Send temporary passwords privately so each person can choose their own password on the first visit.
+4. On **Overview**, use the pencil next to your admin account to set your personal quota. Open **Family space → Set quota** to assign the household quota. Both start at 0 GB. Use **Add person** to create family or guest accounts and enter their quotas. Send temporary passwords privately so each person can choose their own username and password on the first visit.
 5. Keep the host computer and launcher running while people use the drive. `Ctrl+C` stops the server. Start it again with the same launcher and drive attached.
 
 The launcher saves the selected path and storage identity in `.runtime/host.json` inside the application folder. An administrator can open **Storage explorer** in the sidebar to view drive status, capacity, folders, and file details. If the storage drive disconnects, the local site shows an offline page. Reconnect it to resume, or use the terminal setup code and **Reconnect this folder** if Windows assigned it a different drive letter. Keep the storage folder together when moving it.
@@ -47,6 +47,10 @@ For private downloads over 256 MiB, use a desktop browser that supports the file
 - **Recover.** **Move to Trash** removes an item from the active view and keeps its storage allocated. Open **Trash** to restore an item or choose **Delete forever** to reclaim its space. Deleting a folder forever also removes its contents.
 - **Access.** In **My files**, the browser encrypts folder names, filenames, and the file contents. In **Family space** and **Guest exchange**, the owner or admin manages an item. An admin is required to trash or permanently delete a folder containing other people's items. Moves and copies stay within the current space. Archived vaults can be browsed and downloaded.
 
+## Manage your sign-in
+
+Open **Account** to change your username or password. From the sign-in screen, **Change password** accepts your username, current password, and new password. If a member or guest forgets their password, the admin can issue a temporary password in **People & access**.
+
 ## Recover or reset a private vault
 
 - From **My files**, choose **Forgot vault passphrase?** and **Use recovery key** if you saved one for this vault. Enter it and choose a new passphrase to keep your files in place. Save the new recovery key shown afterward.
@@ -70,7 +74,11 @@ The project separates the browser assets and Python service:
 
 ```text
 frontend/   Browser HTML, CSS, and JavaScript
-backend/    Python server, storage discovery, and migrations
+backend/    Python service
+  host_server.py           Launches the website and manages drive setup
+  account_and_file_api.py  Accounts, permissions, quotas, and file operations
+  drive_discovery.py       Detects drives and validates storage paths
+  storage_migration.py     Copies and verifies data during a drive move
 tests/      Account, storage, and file management regression tests
 start.py    Source launcher used by npm run dev
 ```
@@ -88,5 +96,5 @@ Install the Python packages into an environment of your choice, then run the sam
 
 ```powershell
 python -m pip install -r requirements.txt
-python -m backend.host '.runtime/host.json' --port 8765
+python -m backend.host_server '.runtime/host.json' --port 8765
 ```

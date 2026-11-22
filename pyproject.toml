@@ -16,8 +16,8 @@ classifiers = [
 ]
 
 [project.scripts]
-sparedrive = "family_drive.host:main"
-family-drive = "family_drive.host:main"
+sparedrive = "family_drive.host_server:main"
+family-drive = "family_drive.host_server:main"
 
 [tool.setuptools]
 packages = ["family_drive", "family_drive.frontend"]

@@ -22,9 +22,9 @@ from flask import Flask, abort, g, jsonify, request, send_file, send_from_direct
 from werkzeug.exceptions import HTTPException
 
 if __package__:
-    from .storage import drive_inventory, folder_contents, physical_disks, storage_folder
+    from .drive_discovery import drive_inventory, folder_contents, physical_disks, storage_folder
 else:
-    from storage import drive_inventory, folder_contents, physical_disks, storage_folder
+    from drive_discovery import drive_inventory, folder_contents, physical_disks, storage_folder
 
 
 PACKAGE_DIR = Path(__file__).resolve().parent
@@ -441,6 +441,18 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             db.execute("DELETE FROM attempts WHERE key IN ('setup', 'setup-code')")
             return signed_in(db, uid)
 
+    sign_in_failed = 'The username or password is incorrect, or the account is inactive.'
+
+    def verify_sign_in(key, password):
+        attempt_key = 'login:' + session_hash(key)
+        throttle(attempt_key, 8)
+        user = one('SELECT id, password, change_password FROM users WHERE username_key = ? AND active = 1 '
+                   'AND (expires IS NULL OR expires > ?)', (key, now()))
+        valid = check_password(password, user['password'] if user else None)
+        if user is None or not valid:
+            abort(401, sign_in_failed)
+        return user, attempt_key
+
     @app.post('/api/login')
     def login():
         data = json_body()
@@ -449,18 +461,12 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         if not login_slots.acquire(blocking=False):
             abort(429, 'Sign-in is busy. Try again in a moment.')
         try:
-            user = one('SELECT id, password FROM users WHERE username_key = ?', (key,))
-            attempt_key = 'login:' + hashlib.sha256(key.encode('utf-8')).hexdigest()
-            throttle(attempt_key, 8)
-            failed = 'The username or password is incorrect, or the account is inactive.'
-            valid = check_password(password, user['password'] if user else None)
-            if user is None or not valid:
-                abort(401, failed)
+            user, attempt_key = verify_sign_in(key, password)
             with write() as db:
-                current = one('''SELECT 1 FROM users WHERE id = ? AND password = ? AND active = 1
-                    AND (expires IS NULL OR expires > ?)''', (user['id'], user['password'], now()))
+                current = one('''SELECT 1 FROM users WHERE id = ? AND password = ? AND username_key = ? AND active = 1
+                    AND (expires IS NULL OR expires > ?)''', (user['id'], user['password'], key, now()))
                 if not current:
-                    abort(401, failed)
+                    abort(401, sign_in_failed)
                 db.execute('DELETE FROM attempts WHERE key = ?', (attempt_key,))
                 return signed_in(db, user['id'])
         finally:
@@ -482,18 +488,54 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         throttle('password:' + user['id'], 8)
         if not check_password(current, user['password']):
             abort(400, 'The current password is incorrect.')
-        password = credential_text(data.get('password'), 'new password')
-        if current == password:
-            abort(400, 'Choose a different password.')
-        updated = password_hash(password)
+        username = credential_text(data.get('username', user['username']), 'username', trim=True)
+        password = data.get('password', '')
+        if password != '' or user['change_password'] or 'username' not in data:
+            password = credential_text(password, 'new password')
+            if current == password:
+                abort(400, 'Choose a different password.')
+        if not password and username == user['username']:
+            abort(400, 'Enter a new username or password.')
+        updated = password_hash(password) if password else user['password']
         with write() as db:
             live_user = session_user(g.session)
             if live_user is None or live_user['password'] != user['password']:
-                abort(401, 'Your sign-in changed. Sign in again before changing your password.')
-            db.execute('UPDATE users SET password = ?, change_password = 0 WHERE id = ?', (updated, user['id']))
+                abort(401, 'Your sign-in changed. Sign in again before updating your account.')
+            key = username_key(username)
+            if one('SELECT 1 FROM users WHERE username_key = ? AND id != ?', (key, user['id'])):
+                abort(409, 'That username is already in use.')
+            db.execute('UPDATE users SET username = ?, username_key = ?, password = ?, change_password = 0 WHERE id = ?',
+                       (username, key, updated, user['id']))
             db.execute('DELETE FROM sessions WHERE user_id = ?', (user['id'],))
             db.execute('DELETE FROM attempts WHERE key = ?', ('password:' + user['id'],))
             return signed_in(db, user['id'])
+
+    @app.post('/api/password/change')
+    def change_password_from_sign_in():
+        data = json_body()
+        key = username_key(credential_text(data.get('username'), 'username', trim=True))
+        current = credential_text(data.get('current'), 'current password')
+        password = credential_text(data.get('password'), 'new password')
+        if not login_slots.acquire(blocking=False):
+            abort(429, 'Sign-in is busy. Try again in a moment.')
+        try:
+            user, attempt_key = verify_sign_in(key, current)
+            if user['change_password']:
+                abort(400, 'Sign in with your temporary password to finish setting up your account.')
+            if password == current:
+                abort(400, 'Choose a different password.')
+            updated = password_hash(password)
+            with write() as db:
+                result = db.execute('''UPDATE users SET password = ? WHERE id = ? AND username_key = ?
+                    AND password = ? AND active = 1 AND change_password = 0
+                    AND (expires IS NULL OR expires > ?)''', (updated, user['id'], key, user['password'], now()))
+                if result.rowcount != 1:
+                    abort(401, sign_in_failed)
+                db.execute('DELETE FROM sessions WHERE user_id = ?', (user['id'],))
+                db.execute('DELETE FROM attempts WHERE key IN (?, ?)', (attempt_key, 'password:' + user['id']))
+            return jsonify(ok=True)
+        finally:
+            login_slots.release()
 
     def family_quota():
         return int(one("SELECT value FROM config WHERE key = 'family_quota'")['value'])

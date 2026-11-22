@@ -16,13 +16,13 @@ from waitress import create_server
 from werkzeug.exceptions import HTTPException
 
 if __package__:
-    from .migration import move_household
-    from .server import CHUNK, MIN_FREE, OVERHEAD, STORAGE_ASSETS, WEB, create_app
-    from .storage import drive_inventory, folder_choice, folder_contents, physical_disks, storage_folder
+    from .storage_migration import move_household
+    from .account_and_file_api import CHUNK, MIN_FREE, OVERHEAD, STORAGE_ASSETS, WEB, create_app
+    from .drive_discovery import drive_inventory, folder_choice, folder_contents, physical_disks, storage_folder
 else:
-    from migration import move_household
-    from server import CHUNK, MIN_FREE, OVERHEAD, STORAGE_ASSETS, WEB, create_app
-    from storage import drive_inventory, folder_choice, folder_contents, physical_disks, storage_folder
+    from storage_migration import move_household
+    from account_and_file_api import CHUNK, MIN_FREE, OVERHEAD, STORAGE_ASSETS, WEB, create_app
+    from drive_discovery import drive_inventory, folder_choice, folder_contents, physical_disks, storage_folder
 
 
 HOST_COOKIE = 'family_drive_host'

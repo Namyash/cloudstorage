@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 import unittest
 from unittest.mock import patch
 
-from backend.server import create_app
+from backend.account_and_file_api import create_app
 
 
 ORIGIN = 'http://127.0.0.1:8765'
@@ -178,7 +178,7 @@ class FamilyAccessTest(unittest.TestCase):
             self.assertEqual(self.request(member, 'GET', f'files?space=archive:{archive["id"]}').json['folders'][0]['label'], label)
             self.request(admin, 'GET', f'files?space=archive:{archive["id"]}', 404)
 
-    @patch('backend.server.ACCOUNT_ITEM_LIMIT', 2)
+    @patch('backend.account_and_file_api.ACCOUNT_ITEM_LIMIT', 2)
     def test_item_capacity_counts_empty_files_and_folders_until_purge(self):
         with TemporaryDirectory() as directory:
             app = create_app(directory)

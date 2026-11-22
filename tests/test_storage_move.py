@@ -10,7 +10,7 @@ from unittest.mock import patch
 from werkzeug.test import Client
 from werkzeug.wrappers import Response
 
-from backend import host
+from backend import host_server as host
 
 
 ORIGIN = 'http://127.0.0.1:8765'

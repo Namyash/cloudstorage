@@ -5,7 +5,7 @@ import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 
-from backend.server import SCHEMA, create_app, now, password_hash
+from backend.account_and_file_api import SCHEMA, create_app, now, password_hash
 
 
 ORIGIN = 'http://127.0.0.1:8765'
@@ -113,3 +113,35 @@ class CredentialTest(unittest.TestCase):
         self.send(member, 'login', username='member', password=reset['temporaryPassword'])
         self.send(member, 'password', current=reset['temporaryPassword'], password='fixture replacement password')
         self.send(admin, 'login', username='admin', password='fixture admin password')
+
+    def test_change_password_from_sign_in_requires_current_password_and_revokes_sessions(self):
+        app = create_app(self.root)
+        admin, signed_out = app.test_client(), app.test_client()
+        self.send(admin, 'setup', code=app.config['SETUP_CODE'], name='Admin',
+                  username='account', password='current fixture password')
+        self.send(signed_out, 'password/change', 401, username='account',
+                  current='incorrect', password='new fixture password')
+        self.assertIsNotNone(admin.get('/api/state', base_url=ORIGIN).get_json()['user'])
+        self.send(signed_out, 'password/change', username='ACCOUNT',
+                  current='current fixture password', password='new fixture password')
+        for client in (admin, signed_out):
+            self.assertIsNone(client.get('/api/state', base_url=ORIGIN).get_json()['user'])
+        self.send(signed_out, 'login', 401, username='account', password='current fixture password')
+        self.send(signed_out, 'login', username='account', password='new fixture password')
+
+    def test_member_selects_and_updates_username_on_same_account(self):
+        app = create_app(self.root)
+        admin, member, signed_out = (app.test_client() for _ in range(3))
+        self.send(admin, 'setup', code=app.config['SETUP_CODE'], name='Admin',
+                  username='taken', password='test admin password')
+        account = self.send(admin, 'people', 201, name='Member', username='temporary',
+                            role='family', quota=0)
+        temp = account['temporaryPassword']
+        self.send(member, 'login', username='temporary', password=temp)
+        self.send(member, 'password', 409, username='TAKEN', current=temp, password='chosen password')
+        self.send(member, 'password', username='Own ID', current=temp, password='chosen password')
+        self.send(member, 'password', username='Updated ID', current='chosen password')
+        state = member.get('/api/state', base_url=ORIGIN).get_json()
+        self.assertEqual((state['user']['id'], state['user']['username']), (account['id'], 'Updated ID'))
+        self.send(signed_out, 'login', 401, username='temporary', password='chosen password')
+        self.send(signed_out, 'login', username='updated id', password='chosen password')

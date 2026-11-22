@@ -166,7 +166,7 @@ function avatar(user, extra = '') {
   return `<span class="avatar avatar-${user.role} ${extra}" aria-hidden="true">${esc(initials)}</span>`;
 }
 
-const usernameField = '<label>Username<input name="username" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>';
+const usernameField = (value = '') => `<label>Username<input name="username" value="${esc(value)}" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>`;
 
 function authView() {
   displayedPage = undefined;
@@ -176,15 +176,17 @@ function authView() {
   }
   const setup = data.setup;
   const change = data.changePassword;
-  const title = setup ? 'Set up SpareDrive' : change ? 'Choose your own password' : 'Welcome back';
-  const description = setup ? 'Create the first admin account using the setup code on your host computer. You’ll assign storage quotas from the dashboard.' : change ? 'Replace your temporary password before opening your storage.' : 'Sign in to access your family storage.';
+  const title = setup ? 'Set up SpareDrive' : change ? 'Choose your sign-in details' : 'Welcome back';
+  const description = setup ? 'Create the first admin account using the setup code on your host computer. You’ll assign storage quotas from the dashboard.' : change ? 'Choose your username and replace your temporary password before opening your storage.' : 'Sign in to access your family storage.';
   app.innerHTML = `<main class="auth-shell"><aside class="auth-side">${brand()}<div class="auth-message"><img class="auth-symbol" src="/assets/sparedrive-logo.png" width="106" height="106" alt=""><h2>Your family’s files.<br>On your own drive.</h2><p>A home for the photos and documents you choose to keep.</p></div><div class="auth-foot">${icon('shield', 18)} Private family storage</div></aside>
     <section class="auth-main"><div class="auth-mobile">${brand()}</div><div class="auth-card"><h1>${title}</h1><p>${description}</p><form id="auth-form">
       ${setup ? '<label>Setup code<input name="code" autocomplete="off" required></label><label>Display name<input name="name" autocomplete="name" maxlength="60" required></label>' : ''}
-      ${change ? '<label>Temporary or current password<input name="current" type="password" autocomplete="current-password" required></label>' : usernameField}
+      ${usernameField(change ? data.user.username : '')}
+      ${change ? '<label>Temporary or current password<input name="current" type="password" autocomplete="current-password" required></label>' : ''}
       <label>${change ? 'New password' : 'Password'}<input name="password" type="password" autocomplete="${setup || change ? 'new-password' : 'current-password'}" required></label>
-      <p class="form-error" role="alert" hidden></p><button class="button primary" type="submit">${setup ? 'Create admin account' : change ? 'Save password' : 'Sign in'}</button>
-      ${change ? '<button class="button text-button" type="button" data-action="logout">Sign out</button>' : ''}
+      <p class="form-error" role="alert" hidden></p><button class="button primary" type="submit">${setup ? 'Create admin account' : change ? 'Save sign-in details' : 'Sign in'}</button>
+      ${change ? '<button class="button text-button" type="button" data-action="logout">Sign out</button>' :
+        setup ? '' : '<button class="button text-button" type="button" data-action="change-sign-in-password">Change password</button>'}
     </form></div></section></main>`;
   const form = document.querySelector('#auth-form');
   form.addEventListener('submit', event => {
@@ -1255,13 +1257,30 @@ async function previewFile(file) {
   }
 }
 
+function changeSignInPassword() {
+  const signIn = document.querySelector('#auth-form');
+  formDialog('Change password', '', usernameField(signIn.elements.namedItem('username').value) +
+    '<label>Current password<input name="current" type="password" required autocomplete="current-password"></label><label>New password<input name="password" type="password" required autocomplete="new-password"></label>',
+    'Save password', async values => {
+      await api('password/change', { method: 'POST', data: values });
+      dialog.close();
+      signIn.elements.namedItem('username').value = values.username.trim();
+      const password = signIn.elements.namedItem('password');
+      password.value = '';
+      password.focus();
+      notice('Password changed. Sign in with your new password.');
+    });
+}
+
 function accountSettings() {
-  formDialog('Account', `${esc(data.user.name)} · @${esc(data.user.username)}`,
-    '<label>Current password<input type="password" name="current" required autocomplete="current-password"></label><label>New password<input type="password" name="password" required autocomplete="new-password"></label>',
-    'Change password', async values => {
+  formDialog('Account', esc(data.user.name), usernameField(data.user.username) +
+    '<label>Current password<input type="password" name="current" required autocomplete="current-password"></label><label>New password <span class="field-note">Optional</span><input type="password" name="password" autocomplete="new-password"></label>',
+    'Save changes', async values => {
       await api('password', { method: 'POST', data: values });
       dialog.close();
-      notice('Password changed.');
+      await refresh();
+      render();
+      notice('Sign-in details updated.');
     });
 }
 
@@ -1295,6 +1314,7 @@ document.addEventListener('click', event => {
     button.closest('.upload-result').remove();
   }
   else if (action === 'settings') accountSettings();
+  else if (action === 'change-sign-in-password') changeSignInPassword();
   else if (action === 'vault') vaultDialog();
   else if (action === 'vault-forgot') forgotVault();
   else if (action === 'vault-reset') resetVaultDialog();

@@ -26,7 +26,7 @@ def main():
         completed.write_text(wanted, encoding='utf-8')
 
     env = dict(os.environ, PYTHONPATH=str(packages), PYTHONDONTWRITEBYTECODE='1')
-    cmd = [sys.executable, '-m', 'backend.host', str(CONFIG)]
+    cmd = [sys.executable, '-m', 'backend.host_server', str(CONFIG)]
     return subprocess.call(cmd, cwd=APP, env=env)
 
 
