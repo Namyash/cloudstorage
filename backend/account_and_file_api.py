@@ -170,7 +170,7 @@ def guest_expiry(value, previous=None):
 
 
 def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup_code_override=None,
-               storage_move=None, storage_status=None, setup_in_browser=True):
+               storage_move=None, storage_status=None, setup_in_browser=True, require_empty_storage=False):
     root = Path(root).expanduser().resolve()
     if root == root.parent:
         raise ValueError('Choose a dedicated folder on the drive, such as E:\\SpareDriveData.')
@@ -184,12 +184,16 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             raise ValueError('The configured storage folder belongs to a different drive or is unavailable.')
     else:
         root.mkdir(parents=True, exist_ok=True)
-        if not marker.exists():
+        fresh_folder_error = 'Choose a new or empty folder. This folder already contains files or a SpareDrive household.'
+        if require_empty_storage and next(root.iterdir(), None) is not None:
+            raise ValueError(fresh_folder_error)
+        if require_empty_storage or not marker.exists():
             try:
                 with marker.open('x', encoding='ascii') as stream:
                     stream.write(secrets.token_hex(16))
-            except FileExistsError:
-                pass
+            except FileExistsError as error:
+                if require_empty_storage:
+                    raise ValueError(fresh_folder_error) from error
         root_id = marker.read_text(encoding='ascii')
     objects = root / 'objects'
     objects.mkdir(exist_ok=True)

@@ -761,7 +761,7 @@ function familyPermission(allowed) {
 
 function addPerson() {
   const form = formDialog('Add person', 'Give a family member or guest their own login and storage quota.',
-    `<label>Display name<input name="name" required maxlength="60"></label>${usernameField}
+    `<label>Display name<input name="name" required maxlength="60"></label>${usernameField()}
     <div class="form-grid"><label>Role<select name="role"><option value="family">Family member</option><option value="guest">Guest</option></select></label>${quotaField(null)}</div><div class="family-fields">${familyPermission(true)}</div>${guestFields({ role: 'family' })}`, 'Create account', async values => {
     const { familyAccess, ...fields } = values;
     const account = await api('people', { method: 'POST', data: { ...fields, quota: Math.round(Number(values.quota) * GB),

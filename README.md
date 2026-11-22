@@ -17,7 +17,7 @@ The installed package also provides the `sparedrive` command. The existing `fami
 
 1. Open PowerShell in the project folder and run `npm run dev` with Node.js, npm, and Python 3.10 or newer installed. You can also double-click `Start-Family-Drive.cmd` to launch with Python. The launcher installs Flask and Waitress from PyPI on first use.
 2. Open `http://127.0.0.1:8765/`. The storage explorer shows physical disks and Windows drive letters, including when no eligible storage drive is attached. Connect your data drive and wait for its drive letter to appear. To use the Windows system drive, explicitly select **Include the Windows system drive**.
-3. Enter the setup code printed in the terminal, choose **Browse** on your data drive, and choose or create a dedicated storage folder. A new folder starts with a fresh database. Use the same setup code to create your admin account on the next screen.
+3. Enter the setup code printed in the terminal, choose **Browse** on your data drive, and create a dedicated storage folder or select an empty one. First-time setup starts a new household. Use the same setup code to create its first admin account on the next screen.
 4. On **Overview**, use the pencil next to your admin account to set your personal quota. Open **Family space → Set quota** to assign the household quota. Both start at 0 GB. Use **Add person** to create family or guest accounts and enter their quotas. Send temporary passwords privately so each person can choose their own username and password on the first visit.
 5. Keep the host computer and launcher running while people use the drive. `Ctrl+C` stops the server. Start it again with the same launcher and drive attached.
 

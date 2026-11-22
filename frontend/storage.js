@@ -181,16 +181,21 @@ async function refresh(quiet = false) {
 function updateChoice() {
   const reconnect = state.mode === 'offline';
   const moving = state.mode === 'active' && moveRequested;
+  const { managed } = view.listing;
   el('choose').hidden = state.mode === 'active' && !moving;
-  el('select-new').hidden = reconnect || view.listing.managed;
+  el('select-new').hidden = reconnect || managed;
   el('select-current').hidden = moving;
-  el('select-current').disabled = choosing || !view.path || (reconnect && !view.listing.managed);
+  el('select-current').disabled = choosing || !view.path || (reconnect ? !managed : managed);
   el('move-password').hidden = !moving;
   el('move-password').querySelector('input').required = moving;
   setText(el('select-submit'), moving ? 'Copy and switch storage' : 'Create and use folder');
-  setText(el('choice-title'), moving ? 'Choose new storage folder' : reconnect ? 'Reconnect your storage' : 'Choose storage folder');
-  setText(el('select-current'), reconnect ? 'Reconnect this folder' : 'Use this folder');
-  setText(el('choice-help'), moving ? 'SpareDrive copies your accounts and files, checks the copy, and then switches. Your previous folder stays available as a backup.' : reconnect ? 'Browse to your original SpareDrive folder if Windows changed the drive letter.' : 'Create a dedicated folder or use an existing SpareDrive folder or an empty folder.');
+  setText(el('choice-title'), moving ? 'Choose new storage folder' : reconnect ? 'Reconnect your storage' : 'Set up storage for a new household');
+  setText(el('select-current'), reconnect ? 'Reconnect this folder' : 'Use this empty folder');
+  let help = 'Create a folder or select an empty one. You’ll create the first admin account next.';
+  if (moving) help = 'SpareDrive copies your accounts and files, checks the copy, and then switches. Your previous folder stays available as a backup.';
+  else if (reconnect) help = 'Browse to your original SpareDrive folder if Windows changed the drive letter.';
+  else if (managed) help = 'This folder contains another SpareDrive household. Go up and create a new folder for this setup.';
+  setText(el('choice-help'), help);
 }
 
 function displayFolder() {

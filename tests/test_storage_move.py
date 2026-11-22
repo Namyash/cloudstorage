@@ -25,7 +25,7 @@ class StorageMoveTest(unittest.TestCase):
         self.original = self.root / 'original'
         self.destination = self.root / 'new'
         self.config = self.root / 'host.json'
-        folders = patch.object(host, 'folder_choice', side_effect=lambda values: self.root / values['newName'])
+        folders = patch.object(host, 'folder_choice', side_effect=lambda values: self.root / (values.get('newName') or values['path']))
         roots = patch.object(host, 'storage_folder', side_effect=lambda path, _system=False: path)
         inventory = patch.object(host, 'drive_inventory', return_value=[])
         hardware = patch.object(host, 'physical_disks', return_value=[])
@@ -60,6 +60,36 @@ class StorageMoveTest(unittest.TestCase):
                 return result
             time.sleep(0.03)
         self.fail('Storage move did not finish')
+
+    def test_fresh_host_requires_a_separate_household_and_admin(self):
+        new_config = self.root / 'new-host.json'
+        service, _, setup_code = host.create_host(new_config, default_port=18766)
+        client = Client(service, Response)
+        old_session = self.client.get_cookie('family_drive_session', domain='127.0.0.1')
+        client.set_cookie('family_drive_session', old_session.value, domain='127.0.0.1')
+
+        def request(method, endpoint, **values):
+            return client.open(f'/api/{endpoint}', method=method, json=values if values else None,
+                               base_url='http://127.0.0.1:18766',
+                               headers={'X-Family-Drive': '1'}, environ_overrides={'REMOTE_ADDR': '127.0.0.1'})
+
+        self.assertEqual(request('POST', 'storage/unlock', code=setup_code).status_code, 200)
+        for selection in ({'path': self.original.name}, {'newName': self.original.name}):
+            with self.subTest(selection=selection):
+                rejected = request('POST', 'storage/select', **selection)
+                self.assertEqual(rejected.status_code, 409)
+                self.assertIn('new or empty folder', rejected.json['error'])
+                self.assertFalse(new_config.exists())
+
+        empty = self.root / 'client-storage'
+        empty.mkdir()
+        self.assertEqual(request('POST', 'storage/select', path=empty.name).status_code, 200)
+        self.assertEqual(request('GET', 'state').json, {'user': None, 'setup': True, 'setupOnHost': False})
+        setup = request('POST', 'setup', code=setup_code, name='Client admin', username='client-admin', password=PASSWORD)
+        self.assertEqual(setup.status_code, 200)
+        self.assertEqual(request('GET', 'state').json['user']['username'], 'client-admin')
+        self.assertEqual(self.send('GET', 'state').json['user']['username'], 'admin')
+        self.assertEqual(json.loads(self.config.read_text(encoding='utf-8')), self.initial_config)
 
     def test_switch_preserves_ciphertext_accounts_and_quota(self):
         user = self.send('GET', 'state').json['user']

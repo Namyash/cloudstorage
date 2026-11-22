@@ -62,9 +62,10 @@ def create_host(config, default_port=8765, set_temp=None):
             buffer_folder.mkdir(exist_ok=True)
             set_temp(str(buffer_folder))
 
-    def open_drive(path, drive_settings):
+    def open_drive(path, drive_settings, *, require_empty_storage=False):
         return create_app(path, port, drive_settings.get('httpsUrl'), drive_settings.get('storageId'), setup_code,
-                          storage_move=queue_move, storage_status=move_status)
+                          storage_move=queue_move, storage_status=move_status,
+                          require_empty_storage=require_empty_storage)
 
     def active_app():
         nonlocal mounted, mount_error
@@ -239,7 +240,10 @@ def create_host(config, default_port=8765, set_temp=None):
             if settings and not marker_matches(path, settings.get('storageId')):
                 abort(409, 'Choose the original SpareDrive folder. Its storage identity must match.')
             updated = dict(settings, data=str(path), port=port, allowSystemDrive=values.get('allowSystem') is True)
-            current = open_drive(path, updated)
+            try:
+                current = open_drive(path, updated, require_empty_storage=not settings)
+            except ValueError as error:
+                abort(409, str(error))
             updated['storageId'] = (path / '.family-drive-id').read_text(encoding='ascii')
             set_drive_temp(path)
             save_settings(updated)
