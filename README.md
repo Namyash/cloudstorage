@@ -68,6 +68,18 @@ The default launcher listens only on the host computer. For phones and other com
 
 [Tailscale Serve setup](https://tailscale.com/docs/features/tailscale-serve), [Tailscale access grants](https://tailscale.com/docs/features/access-control/grants).
 
+## Open SpareDrive from the internet
+
+1. On the Windows host, start SpareDrive, select a dedicated folder on your data drive, and create your administrator account.
+2. The internet setup wizard installs Tailscale through WinGet if it is missing on the Windows host. Approve the installation if Windows prompts, then sign in to Tailscale. A tailnet administrator must authorize the device to use [Funnel](https://tailscale.com/docs/features/tailscale-funnel). Family members can use a browser.
+3. Run `sparedrive-remote` in the environment where you installed the wheel. Pass `--config "C:\path\to\host.json"` if you start SpareDrive with a custom settings file. The local test installer also offers the wizard after installation and creates `Configure-Internet-Access.cmd` in the installation folder.
+4. Confirm the public HTTPS address. If the wizard saves a new address, restart SpareDrive as requested. Share the verified link with household members after creating their accounts. Test sign-in, uploads and downloads from a phone on mobile data.
+5. To publish an optional launch page, install Node.js with npx or use the Vercel CLI. Enter your Vercel email or use an existing CLI session, complete Vercel verification, and choose a launch-page address and a dedicated project. Enter a name like spare-smith for spare-smith.vercel.app, an existing domain you own like drive.example.com, or press Enter for Vercel’s default address. Your own domain may require DNS changes in the project’s Domains tab. Share the verified launch-page URL printed by the wizard.
+
+Funnel makes the SpareDrive sign-in page publicly reachable. SpareDrive accounts and permissions control access to files. Vercel serves the launch page. Uploads and downloads go through the tunnel to the selected drive on the Windows host. Keep the PC awake with SpareDrive, Tailscale and the drive available. To turn off public access, run `tailscale funnel --https=443 off` on the host.
+
+Funnel is subject to bandwidth limits. Check [Vercel plan terms](https://vercel.com/docs/limits/fair-use-guidelines) before commercial deployment.
+
 ## Deploy with Coolify
 
 For a Windows home computer with a removable drive, use the [Coolify Windows gateway](deploy/coolify/README.md). The Windows launcher continues to discover drives, manage storage, and serve the existing accounts and files. Coolify manages the browser gateway.

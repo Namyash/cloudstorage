@@ -16,6 +16,7 @@ classifiers = [
 ]
 
 [project.scripts]
+sparedrive-remote = "family_drive.remote_setup:main"
 sparedrive = "family_drive.host_server:main"
 family-drive = "family_drive.host_server:main"
 
