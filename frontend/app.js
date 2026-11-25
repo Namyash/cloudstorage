@@ -19,7 +19,6 @@ let gridView = localStorage.getItem('family-drive-layout') === 'grid';
 let previewUrl;
 let draggedItem;
 let loadToken = 0;
-let navigationToken = 0;
 let displayedPage;
 let search = '';
 let fileSort = 'newest';
@@ -675,10 +674,8 @@ async function refresh() {
 
 async function navigate(next) {
   if (transfer) { notice('Wait for the current transfer to finish.'); return; }
-  const token = ++navigationToken;
   if (next === 'family') {
     await refresh();
-    if (token !== navigationToken || transfer) return;
     if (!data.user?.familyAccess) {
       await navigate('private');
       if (data.user) notice('Family space access is blocked.', true);
@@ -695,7 +692,7 @@ async function navigate(next) {
   search = '';
   selectedFiles.clear();
   await loadFiles();
-  if (token === navigationToken) render();
+  render();
 }
 
 function openFolder(item) {

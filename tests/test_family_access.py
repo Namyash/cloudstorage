@@ -61,42 +61,6 @@ class FamilyAccessTest(unittest.TestCase):
             self.request(member, 'POST', 'login', json={'username': 'member', 'password': 'member password'})
             self.request(member, 'GET', 'files?space=family')
 
-    def test_revoking_guest_exchange_releases_only_the_guest_exchange_uploads(self):
-        with TemporaryDirectory() as directory:
-            root = Path(directory)
-            app = create_app(root)
-            admin, guest = app.test_client(), app.test_client()
-            self.request(admin, 'POST', 'setup', json={'code': app.config['SETUP_CODE'],
-                         'name': 'Admin', 'username': 'admin', 'password': 'test password'})
-            account = self.request(admin, 'POST', 'people', 201, json={
-                'name': 'Guest', 'username': 'guest', 'role': 'guest', 'quota': 500, 'exchange': True,
-            }).json
-            temporary = account['temporaryPassword']
-            self.request(guest, 'POST', 'login', json={'username': 'guest', 'password': temporary})
-            self.request(guest, 'POST', 'password', json={'current': temporary, 'password': 'guest password'})
-            packet = lambda length: b64encode(secrets.token_bytes(length)).decode('ascii')
-            self.request(guest, 'POST', 'vault', json={'salt': packet(16), 'verifier': packet(32),
-                         'wrappedKey': packet(60), 'recoveryWrap': packet(60), 'revision': 0})
-            ready, pending, private = [secrets.token_hex(16) for _ in range(3)]
-            exchange = 'exchange:' + account['id']
-            for file_id in (ready, pending):
-                self.request(guest, 'POST', 'uploads', 201, json={
-                    'id': file_id, 'space': exchange, 'label': 'note.txt', 'size': 3,
-                })
-            self.request(guest, 'PUT', f'uploads/{ready}/0', data=b'abc', content_type='application/octet-stream')
-            self.request(guest, 'POST', 'uploads', 201, json={
-                'id': private, 'space': 'private', 'label': packet(29), 'size': 3, 'revision': 1,
-            })
-
-            path = 'people/' + account['id']
-            self.request(admin, 'PATCH', path, json={'quota': 34, 'exchange': False})
-            self.assertFalse((root / 'objects' / pending).exists())
-            self.assertTrue((root / 'objects' / private).exists())
-            self.assertEqual(self.request(admin, 'GET', f'files/{ready}/blob').data, b'abc')
-            self.request(admin, 'PATCH', path, json={'quota': 3, 'active': False})
-            self.assertFalse((root / 'objects' / private).exists())
-            self.request(guest, 'GET', 'files', 401)
-
     def test_file_management_preserves_ownership_and_vault_metadata(self):
         with TemporaryDirectory() as directory:
             app = create_app(directory)

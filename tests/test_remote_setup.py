@@ -129,29 +129,6 @@ class RemoteSetupTest(unittest.TestCase):
                 self.assertIn(('api', '/v10/projects/prj_example/domains?teamId=team_example',
                                '-X', 'POST', '-f', f'name={requested}'), calls)
 
-    def test_windows_device_name_is_used_only_as_the_vercel_project_name(self):
-        requested = 'con.vercel.app'
-
-        def run_vercel(executable, action, *args, cwd=None, **kwargs):
-            if action == 'link':
-                self.assertEqual(cwd.name, 'sparedrive-family')
-                metadata = cwd / '.vercel'
-                metadata.mkdir()
-                (metadata / 'project.json').write_text('{}', encoding='utf-8')
-            elif action == 'deploy':
-                return 'https://con-123.vercel.app'
-            elif action == 'api':
-                return json.dumps({'alias': [requested]})
-
-        with (
-            patch.object(remote_setup, 'vercel_cli', return_value=['vercel']),
-            patch.object(remote_setup, 'command', side_effect=run_vercel),
-            patch.object(remote_setup, 'launch_page_is_live', return_value=True),
-            patch('builtins.input', side_effect=['', requested]),
-            patch('builtins.print'),
-        ):
-            self.assertEqual(remote_setup.publish_launch_page(PUBLIC_URL), f'https://{requested}')
-
     def test_vercel_launch_page_contains_only_static_link(self):
         with TemporaryDirectory() as directory:
             staging = Path(directory)

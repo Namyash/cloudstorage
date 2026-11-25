@@ -112,14 +112,10 @@ def credential_text(value, label, *, trim=False):
         value = value.strip()
     if not value:
         abort(400, f'Enter your {label}.')
-    return utf8_text(value, f'Enter a valid {label}.')
-
-
-def utf8_text(value, message):
     try:
         value.encode('utf-8')
     except UnicodeEncodeError:
-        abort(400, message)
+        abort(400, f'Enter a valid {label}.')
     return value
 
 
@@ -131,7 +127,7 @@ def named_account(data):
     name = data.get('name')
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 60:
         abort(400, 'Enter a display name of up to 60 characters.')
-    return utf8_text(name.strip(), 'Enter a valid display name.'), credential_text(data.get('username'), 'username', trim=True)
+    return name.strip(), credential_text(data.get('username'), 'username', trim=True)
 
 
 def number(value, label):
@@ -157,7 +153,7 @@ def file_label(space, label):
         return encoded(label, 29, 1052)
     if not isinstance(label, str) or not 1 <= len(label) <= 255 or re.search(r'[\x00-\x1f\x7f/\\]', label) or label in ('.', '..'):
         abort(400, 'Invalid filename.')
-    return utf8_text(label, 'Invalid filename.')
+    return label
 
 
 def guest_expiry(value, previous=None):
@@ -204,7 +200,6 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
     database = root / 'family-drive.sqlite3'
     app = Flask(__name__, static_folder=None)
     login_slots = BoundedSemaphore(3)
-    unknown_login_key = secrets.token_bytes(32)
     loopback = f'http://127.0.0.1:{port}'
     origins = {urlsplit(loopback).netloc: loopback}
     if public_url:
@@ -295,14 +290,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
                 db.execute("DELETE FROM stars WHERE kind = 'file' AND item_id = ?", (row['id'],))
 
     def expire_uploads():
-        stamp = now()
-        connection().execute('''UPDATE files SET state = 'removed' WHERE state = 'uploading' AND (
-            modified < ? OR EXISTS (SELECT 1 FROM users WHERE users.id = files.owner AND (
-                active = 0 OR (expires IS NOT NULL AND expires <= ?)
-                OR (role = 'family' AND family_access = 0 AND files.space = 'family')
-                OR (role = 'guest' AND exchange = 0 AND files.space = 'exchange:' || users.id)
-            ))
-        )''', (stamp - UPLOAD_AGE, stamp))
+        connection().execute("UPDATE files SET state = 'removed' WHERE state = 'uploading' AND modified < ?", (now() - UPLOAD_AGE,))
         clean_removed()
 
     with app.app_context():
@@ -352,8 +340,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         return jsonify(error='Storage could not be accessed. Check the drive and try again.'), 503
 
     def json_body():
-        request.max_content_length = 16_384
-        if (request.content_length or 0) > request.max_content_length:
+        if (request.content_length or 0) > 16_384:
             abort(413)
         data = request.get_json(silent=True)
         if not isinstance(data, dict):
@@ -430,7 +417,6 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         if not check_password(password, user['password']):
             abort(400, 'The sign-in password is incorrect.')
         try:
-            expire_uploads()
             return jsonify(storage_move(values)), 202
         except (ValueError, PermissionError) as error:
             abort(400, str(error))
@@ -462,16 +448,10 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
     sign_in_failed = 'The username or password is incorrect, or the account is inactive.'
 
     def verify_sign_in(key, password):
+        attempt_key = 'login:' + session_hash(key)
+        throttle(attempt_key, 8)
         user = one('SELECT id, password, change_password FROM users WHERE username_key = ? AND active = 1 '
                    'AND (expires IS NULL OR expires > ?)', (key, now()))
-        channel = 'local' if g.origin == loopback else 'remote'
-        if user is None:
-            # Share 256 buckets per channel so arbitrary names cannot grow persistent state.
-            bucket = hmac.digest(unknown_login_key, key.encode(), 'sha256')[0]
-            attempt_key = f'login:{channel}:unknown:{bucket}'
-        else:
-            attempt_key = f"login:{channel}:account:{user['id']}"
-        throttle(attempt_key, 8)
         valid = check_password(password, user['password'] if user else None)
         if user is None or not valid:
             abort(401, sign_in_failed)
@@ -741,19 +721,6 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
                 if 'expires' in data:
                     expires = guest_expiry(data['expires'], previous=expires)
                 exchange = data.get('exchange', exchange) is True
-            if not active or (expires is not None and expires <= now()):
-                cancelled = db.execute("UPDATE files SET state = 'removed' WHERE owner = ? AND state = 'uploading'",
-                                       (uid,)).rowcount
-            else:
-                revoked_space = None
-                if user['role'] == 'family' and not shared:
-                    revoked_space = 'family'
-                elif user['role'] == 'guest' and not exchange:
-                    revoked_space = f'exchange:{uid}'
-                cancelled = db.execute(
-                    "UPDATE files SET state = 'removed' WHERE owner = ? AND space = ? AND state = 'uploading'",
-                    (uid, revoked_space),
-                ).rowcount if revoked_space else 0
             if quota < usage(owner=uid, reserved=True):
                 abort(409, 'The new quota is below the storage already used or reserved by this account.')
             check_allocation(quota, user['quota'])
@@ -761,6 +728,9 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
                        (quota, active, expires, int(exchange), shared, uid))
             if not active:
                 db.execute('DELETE FROM sessions WHERE user_id = ?', (uid,))
+            cancelled = 0
+            if user['role'] == 'family' and (not active or not shared):
+                cancelled = db.execute("UPDATE files SET state = 'removed' WHERE owner = ? AND space = 'family' AND state = 'uploading'", (uid,)).rowcount
         if cancelled:
             clean_removed()
         return jsonify(ok=True)

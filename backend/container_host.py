@@ -12,7 +12,7 @@ from urllib.request import Request, urlopen
 
 from waitress import serve
 
-from .account_and_file_api import CHUNK, OVERHEAD, create_app
+from .account_and_file_api import create_app
 
 DATA_DIR = Path('/data')
 CONTAINER_PORT = 8765
@@ -82,9 +82,7 @@ def main():
         if action == 'setup':
             create_admin(app, host_port)
         else:
-            body_limit = CHUNK + OVERHEAD
-            serve(app, host='0.0.0.0', port=CONTAINER_PORT,
-                  max_request_body_size=body_limit, inbuf_overflow=body_limit + 1)
+            serve(app, host='0.0.0.0', port=CONTAINER_PORT)
     except (OSError, ValueError, sqlite3.Error, EOFError) as error:
         print(f'SpareDrive: {error}', file=sys.stderr)
         return 1
