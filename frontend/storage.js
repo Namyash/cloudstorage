@@ -8,6 +8,7 @@ let choosing = false;
 let authNeeded = false;
 let includeSystem = false;
 let moveRequested = false;
+let newHouseholdRequested = false;
 const driveRows = new Map();
 const emptyDrives = document.createElement('p');
 emptyDrives.className = 'quiet-state';
@@ -118,6 +119,9 @@ function displayState() {
   const moving = state.mode === 'moving';
   const active = state.mode === 'active';
   if (!active) moveRequested = false;
+  if (state.mode !== 'offline' || !state.unlocked) newHouseholdRequested = false;
+  el('new-household').hidden = state.mode !== 'offline' || !state.unlocked || !ready;
+  setText(el('new-household'), newHouseholdRequested ? 'Reconnect existing household instead' : 'Set up a new household');
   el('unlock-panel').hidden = active || moving || state.unlocked || !ready;
   el('system-option').hidden = moving || !state.volumes.some(volume => volume.system && volume.ready);
   el('move-open').hidden = !active || !state.canMove;
@@ -139,7 +143,9 @@ function displayState() {
     if (job.total > 0) el('move-meter').value = Math.min(100, Math.round(100 * job.copied / job.total));
     else el('move-meter').removeAttribute('value');
   } else if (active) setStatus('Storage is connected', moveRequested ? 'Browse the destination drive or folder below, then choose a new folder name.' : `SpareDrive uses ${state.selected}`, 'active');
-  else if (state.mode === 'offline') setStatus('Your storage drive is offline', `${state.selected}. ${state.detail}`, 'offline');
+  else if (state.mode === 'offline') setStatus('Household storage is unavailable',
+    newHouseholdRequested ? 'Browse an available drive and choose an empty folder for the new household.'
+      : `${state.selected}. ${state.detail}`, 'offline');
   else if (ready) setStatus('Data drive available', state.unlocked ? 'Browse a drive below and choose where SpareDrive should store the database and files.' : 'Unlock storage setup using the code in your terminal to browse a drive and choose a folder.', 'setup');
   else setStatus('Choose a storage drive', 'Connect a spare drive with a Windows drive letter. SpareDrive checks for changes automatically.', 'offline');
   displayVolumes();
@@ -169,6 +175,7 @@ async function refresh(quiet = false) {
       el('home').hidden = false;
       el('inventory').hidden = true;
       el('unlock-panel').hidden = true;
+      el('new-household').hidden = true;
       el('browse').hidden = true;
       setStatus('Admin sign-in required', 'Sign in to SpareDrive as the administrator to browse the attached drives.', 'offline');
     } else if (!quiet || !state) report(error.message);
@@ -179,7 +186,7 @@ async function refresh(quiet = false) {
 }
 
 function updateChoice() {
-  const reconnect = state.mode === 'offline';
+  const reconnect = state.mode === 'offline' && !newHouseholdRequested;
   const moving = state.mode === 'active' && moveRequested;
   const { managed } = view.listing;
   el('choose').hidden = state.mode === 'active' && !moving;
@@ -193,7 +200,8 @@ function updateChoice() {
   setText(el('select-current'), reconnect ? 'Reconnect this folder' : 'Use this empty folder');
   let help = 'Create a folder or select an empty one. You’ll create the first admin account next.';
   if (moving) help = 'SpareDrive copies your accounts and files, checks the copy, and then switches. Your previous folder stays available as a backup.';
-  else if (reconnect) help = 'Browse to your original SpareDrive folder if Windows changed the drive letter.';
+  else if (reconnect) help = 'Browse to the folder containing your existing SpareDrive database.';
+  else if (newHouseholdRequested && !managed) help = 'Choose an empty folder for a separate household. SpareDrive saves a backup of the previous host settings.';
   else if (managed) help = 'This folder contains another SpareDrive household. Go up and create a new folder for this setup.';
   setText(el('choice-help'), help);
 }
@@ -207,7 +215,7 @@ function displayFolder() {
   el('entries-table').hidden = !entries.length;
   el('browse-message').hidden = Boolean(entries.length);
   el('browse-message').textContent = managed ? 'This is a SpareDrive storage folder. Use the app’s file spaces to access managed files.' : 'This folder is empty.';
-  el('entries').innerHTML = entries.map(item => `<tr><td>${item.directory ? `<button class="folder-button" data-folder="${escape(item.name)}" type="button">${escape(item.name)}</button>` : escape(item.name)}</td><td>${item.directory ? 'Folder' : 'File'}</td><td>${bytes(item.size)}</td><td>${escape(new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(item.modified * 1000)))}</td></tr>`).join('');
+  el('entries').innerHTML = entries.map(item => `<tr><td>${item.directory ? `<button class="folder-button" data-folder="${escape(item.name)}" type="button"><svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 7a2 2 0 0 1 2-2h4l2 2h8a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2Z"/></svg><span>${escape(item.name)}</span></button>` : escape(item.name)}</td><td>${item.directory ? 'Folder' : 'File'}</td><td>${bytes(item.size)}</td><td>${escape(new Intl.DateTimeFormat(undefined, { dateStyle: 'medium' }).format(new Date(item.modified * 1000)))}</td></tr>`).join('');
   el('pages').hidden = !more && view.offset === 0;
   el('prev').disabled = view.offset === 0;
   el('next').disabled = !more;
@@ -227,12 +235,14 @@ async function openFolder(drive, path = '', offset = 0) {
 async function selectFolder(newName = '', password = '') {
   if (choosing || !view.listing) return;
   const move = state.mode === 'active' && moveRequested;
+  const newHousehold = state.mode === 'offline' && newHouseholdRequested;
+  if (newHousehold && !window.confirm('Create a separate household on this drive? You will create a new admin account. Your previous files stay on the original drive.')) return;
   choosing = true;
   const submit = el('select-new').querySelector('button');
   submit.disabled = true;
   updateChoice();
   try {
-    await request(move ? 'move' : 'select', { drive: view.drive, path: view.path, newName, password, allowSystem: includeSystem });
+    await request(move ? 'move' : 'select', { drive: view.drive, path: view.path, newName, password, allowSystem: includeSystem, newHousehold });
     if (!move) location.assign('/');
     else {
       moveRequested = false;
@@ -264,6 +274,11 @@ el('system-drive').addEventListener('change', event => {
 el('move-open').addEventListener('click', () => {
   moveRequested = !moveRequested;
   el('move-password').querySelector('input').value = '';
+  displayState();
+});
+el('new-household').addEventListener('click', () => {
+  if (choosing || state?.mode !== 'offline' || !state.unlocked) return;
+  newHouseholdRequested = !newHouseholdRequested;
   displayState();
 });
 el('volumes').addEventListener('click', event => {

@@ -121,6 +121,38 @@ def joined_folder(drive, relative, allow_system=False):
     return current
 
 
+def household_matches(folder, expected):
+    if not expected:
+        return False
+    try:
+        return ((folder / '.family-drive-id').read_text(encoding='ascii') == expected
+                and (folder / 'family-drive.sqlite3').is_file())
+    except (OSError, UnicodeError):
+        return False
+
+
+def relocated_storage_folder(saved_folder, expected, allow_system=False):
+    saved = PureWindowsPath(saved_folder)
+    if not expected or not re.fullmatch(r'[A-Za-z]:', saved.drive) or not saved.is_absolute() or saved == saved.parent:
+        return None
+    relative = saved.relative_to(saved.anchor).as_posix()
+    match = None
+    for volume in drive_inventory():
+        drive = volume['drive']
+        if drive.casefold() == saved.drive.casefold() or not (
+                volume['eligible'] or (allow_system and volume['system'] and volume['ready'])):
+            continue
+        try:
+            candidate = joined_folder(drive, relative, allow_system)
+        except (OSError, ValueError):
+            continue
+        if household_matches(candidate, expected):
+            if match is not None:
+                return None  # A copied identity needs the host's explicit choice.
+            match = candidate
+    return match
+
+
 def folder_contents(drive, relative, offset, allow_system=False):
     if not 0 <= offset <= 1_000_000:
         raise ValueError('Invalid folder page.')

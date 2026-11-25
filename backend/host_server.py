@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import secrets
+import socket
 import sqlite3
 from threading import Condition, RLock, Thread
 import tempfile
@@ -18,11 +19,17 @@ from werkzeug.exceptions import HTTPException
 if __package__:
     from .storage_migration import move_household
     from .account_and_file_api import CHUNK, MIN_FREE, OVERHEAD, STORAGE_ASSETS, WEB, create_app
-    from .drive_discovery import drive_inventory, folder_choice, folder_contents, physical_disks, storage_folder
+    from .drive_discovery import (
+        drive_inventory, folder_choice, folder_contents, household_matches, physical_disks, relocated_storage_folder,
+        storage_folder,
+    )
 else:
     from storage_migration import move_household
     from account_and_file_api import CHUNK, MIN_FREE, OVERHEAD, STORAGE_ASSETS, WEB, create_app
-    from drive_discovery import drive_inventory, folder_choice, folder_contents, physical_disks, storage_folder
+    from drive_discovery import (
+        drive_inventory, folder_choice, folder_contents, household_matches, physical_disks, relocated_storage_folder,
+        storage_folder,
+    )
 
 
 HOST_COOKIE = 'family_drive_host'
@@ -44,17 +51,12 @@ def create_host(config, default_port=8765, set_temp=None):
     move = None
     mounted = None
     mount_error = ''
+    next_relocation_check = 0
     authorized_until = 0
     attempts = 0
     attempt_window = 0
     portal = Flask(__name__, static_folder=None)
     portal.config.update(MAX_CONTENT_LENGTH=16 * 1024)
-
-    def marker_matches(path, expected):
-        try:
-            return bool(expected) and (path / '.family-drive-id').read_text(encoding='ascii') == expected
-        except (OSError, UnicodeError):
-            return False
 
     def set_drive_temp(path):
         if set_temp:
@@ -63,26 +65,41 @@ def create_host(config, default_port=8765, set_temp=None):
             set_temp(str(buffer_folder))
 
     def open_drive(path, drive_settings, *, require_empty_storage=False):
-        return create_app(path, port, drive_settings.get('httpsUrl'), drive_settings.get('storageId'), setup_code,
+        storage_id = drive_settings.get('storageId')
+        if storage_id and not household_matches(path, storage_id):
+            raise ValueError('The original SpareDrive database is unavailable.')
+        return create_app(path, port, drive_settings.get('httpsUrl'), storage_id, setup_code,
                           storage_move=queue_move, storage_status=move_status,
                           require_empty_storage=require_empty_storage)
 
     def active_app():
-        nonlocal mounted, mount_error
+        nonlocal settings, mounted, mount_error, next_relocation_check
         with lock:
             if not settings:
                 return None
-            path = Path(settings['data'])
-            if not marker_matches(path, settings.get('storageId')):
+            saved = Path(settings['data'])
+            path = saved
+            storage_id = settings.get('storageId')
+            allow_system = settings.get('allowSystemDrive') is True
+            if not household_matches(saved, storage_id):
                 mounted = None
-                mount_error = 'Reconnect the data drive or locate its storage folder on another drive letter.'
-            elif mounted is None:
+                mount_error = 'The saved household folder or database could not be opened. Reconnect your drive or use Storage explorer to choose a new household.'
+                stamp = monotonic()
+                if stamp < next_relocation_check:
+                    return None
+                next_relocation_check = stamp + 3
+                path = relocated_storage_folder(saved, storage_id, allow_system)
+                if path is None:
+                    return None
+            if mounted is None:
                 try:
-                    folder = storage_folder(path, settings.get('allowSystemDrive') is True)
-                    app = open_drive(folder, settings)
+                    folder = storage_folder(path, allow_system)
+                    updated = dict(settings, data=str(folder))
+                    app = open_drive(folder, updated)
                     set_drive_temp(folder)
-                    mounted = app
-                    mount_error = ''
+                    if folder != saved:
+                        save_settings(updated)
+                    settings, mounted, mount_error = updated, app, ''
                 except (ValueError, OSError, sqlite3.Error):
                     mount_error = 'The storage folder is unavailable. Check the drive and folder permissions.'
             return mounted
@@ -225,26 +242,32 @@ def create_host(config, default_port=8765, set_temp=None):
     @portal.post('/api/storage/select')
     def select():
         nonlocal settings, mounted, mount_error, authorized_until
-        if not authorized():
-            abort(401, 'Enter your setup code before selecting a storage folder.')
         values = request.get_json(silent=True)
         if not isinstance(values, dict):
             abort(400, 'Select a drive and storage folder.')
         with lock:
+            if not authorized():
+                abort(401, 'Enter your setup code before selecting a storage folder.')
             if moving() or active_app() is not None:
                 abort(409, 'The storage folder is already connected.')
+            start_new = values.get('newHousehold') is True
             try:
                 path = folder_choice(values)
             except ValueError as error:
                 abort(400, str(error))
-            if settings and not marker_matches(path, settings.get('storageId')):
-                abort(409, 'Choose the original SpareDrive folder. Its storage identity must match.')
-            updated = dict(settings, data=str(path), port=port, allowSystemDrive=values.get('allowSystem') is True)
+            if settings and not start_new and not household_matches(path, settings.get('storageId')):
+                abort(409, 'Choose the original SpareDrive folder with its database and matching storage identity.')
+            updated = dict({} if start_new else settings, data=str(path), port=port,
+                           allowSystemDrive=values.get('allowSystem') is True)
             try:
-                current = open_drive(path, updated, require_empty_storage=not settings)
+                current = open_drive(path, updated, require_empty_storage=start_new or not settings)
             except ValueError as error:
                 abort(409, str(error))
             updated['storageId'] = (path / '.family-drive-id').read_text(encoding='ascii')
+            if start_new and settings:
+                backup = config.with_name(f'{config.stem}.previous-{secrets.token_hex(6)}.json')
+                with backup.open('x', encoding='utf-8') as stream:
+                    json.dump(settings, stream, indent=2)
             set_drive_temp(path)
             save_settings(updated)
             settings, mounted, mount_error = updated, current, ''
@@ -275,6 +298,19 @@ def create_host(config, default_port=8765, set_temp=None):
     return dispatch, port, setup_code
 
 
+def bind_local_listener(port):
+    listener = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+    try:
+        # Windows SO_REUSEADDR otherwise permits overlapping local servers.
+        option = socket.SO_EXCLUSIVEADDRUSE if os.name == 'nt' else socket.SO_REUSEADDR
+        listener.setsockopt(socket.SOL_SOCKET, option, 1)
+        listener.bind(('127.0.0.1', port))
+    except OSError:
+        listener.close()
+        raise
+    return listener
+
+
 def main():
     parser = argparse.ArgumentParser(description='Run SpareDrive and the local storage explorer.')
     local = Path(os.environ.get('LOCALAPPDATA', Path.home() / '.config')) / 'FamilyDrive' / 'host.json'
@@ -282,11 +318,17 @@ def main():
     parser.add_argument('--port', type=int, default=8765, help='Local port for a new host setup')
     args = parser.parse_args()
     service, port, code = create_host(args.config, args.port, set_temp=lambda path: setattr(tempfile, 'tempdir', path))
-    server = create_server(service, host='127.0.0.1', port=port, threads=6,
-                           max_request_body_size=CHUNK + OVERHEAD, inbuf_overflow=CHUNK + OVERHEAD + 1)
-    print(f'SpareDrive is available at http://127.0.0.1:{port}/', flush=True)
-    print(f'Local storage and admin setup code: {code}', flush=True)
-    server.run()
+    try:
+        listener = bind_local_listener(port)
+    except OSError:
+        parser.exit(1, f'SpareDrive could not use 127.0.0.1:{port}. '
+                       'Close the server already using this port and try again.\n')
+    with listener:
+        server = create_server(service, sockets=[listener], threads=6,
+                               max_request_body_size=CHUNK + OVERHEAD, inbuf_overflow=CHUNK + OVERHEAD + 1)
+        print(f'SpareDrive is available at http://127.0.0.1:{server.effective_port}/', flush=True)
+        print(f'Local storage and admin setup code: {code}', flush=True)
+        server.run()
 
 
 if __name__ == '__main__':

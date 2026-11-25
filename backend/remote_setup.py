@@ -281,26 +281,39 @@ def publish_launch_page(destination):
             shutil.rmtree(staging, ignore_errors=True)
 
 
+def wait_for_local_setup(config):
+    launcher = config.parent / 'Start-SpareDrive.cmd'
+    while True:
+        try:
+            settings = read_json(config)
+        except FileNotFoundError:
+            if launcher.is_file():
+                print(f'Open "{launcher}" and use the browser address and setup code shown in that window.',
+                      flush=True)
+            else:
+                print('Start SpareDrive with the same host settings and open its local browser address.',
+                      flush=True)
+        else:
+            port = settings.get('port', 8765)
+            if not settings.get('data') or type(port) is not int or not 1 <= port <= 65535:
+                raise ValueError('Use the host settings from an initialized SpareDrive installation.')
+            local_url = f'http://127.0.0.1:{port}'
+            try:
+                app_ready(local_url)
+                return settings, local_url
+            except (OSError, ValueError):
+                print(f'Open {local_url} and complete the local setup, or restart its server if it is stopped.',
+                      flush=True)
+        input('When the SpareDrive dashboard opens, press Enter (Ctrl+C to exit): ')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     default_config = Path(os.environ.get('LOCALAPPDATA', Path.home() / '.config')) / 'FamilyDrive' / 'host.json'
     parser.add_argument('--config', type=Path, default=default_config, help='Windows SpareDrive host settings')
     config = parser.parse_args().config.expanduser().resolve()
     try:
-        if not config.is_file():
-            print('Start SpareDrive and complete its storage and first-admin setup in your browser.', flush=True)
-            input('When the SpareDrive dashboard opens, press Enter here: ')
-        settings = read_json(config)
-        port = settings.get('port', 8765)
-        if not settings.get('data') or type(port) is not int or not 1 <= port <= 65535:
-            raise ValueError('Use the host settings from an initialized SpareDrive installation.')
-        local_url = f'http://127.0.0.1:{port}'
-        try:
-            app_ready(local_url)
-        except (OSError, ValueError):
-            print(f'Open SpareDrive at {local_url} and complete its setup if prompted.', flush=True)
-            input('When the SpareDrive dashboard opens, press Enter here: ')
-            app_ready(local_url)
+        settings, local_url = wait_for_local_setup(config)
 
         tailscale = ensure_tailscale()
         hostname = funnel_hostname(tailscale)
@@ -316,7 +329,13 @@ def main():
             save_public_origin(config, settings, public_url)
             print('Saved the HTTPS address. Restart SpareDrive using the same settings file.', flush=True)
             input('When SpareDrive is running again, press Enter: ')
-        app_ready(local_url, hostname)
+        while True:
+            try:
+                app_ready(local_url, hostname)
+                break
+            except (OSError, ValueError):
+                print('SpareDrive has not loaded the HTTPS address yet.', flush=True)
+                input('Restart SpareDrive with the same settings file, then press Enter (Ctrl+C to exit): ')
 
         if needs_funnel:
             command(tailscale, 'funnel', '--bg', f'--https={HTTPS_PORT}', local_url)

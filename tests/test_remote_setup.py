@@ -60,6 +60,31 @@ class RemoteSetupTest(unittest.TestCase):
             with self.assertRaisesRegex(ValueError, 'already has a route'):
                 remote_setup.funnel_needs_setup('tailscale', HOST, 'http://127.0.0.1:8765')
 
+    def test_waits_for_the_installed_host_config_and_first_admin(self):
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            config = root / 'test-host.json'
+            launcher = root / 'Start-SpareDrive.cmd'
+            launcher.touch()
+            settings = {'data': 'X:/FamilyData', 'port': 18766, 'storageId': 'test'}
+            prompts = iter(('too early', 'storage selected', 'admin created'))
+
+            def continue_setup(_):
+                stage = next(prompts)
+                if stage == 'storage selected':
+                    config.write_text(json.dumps(settings), encoding='utf-8')
+                return ''
+
+            with (
+                patch('builtins.input', side_effect=continue_setup) as enter,
+                patch('builtins.print') as status,
+                patch.object(remote_setup, 'app_ready', side_effect=[ValueError('Setup pending'), None]) as check,
+            ):
+                self.assertEqual(remote_setup.wait_for_local_setup(config), (settings, LOCAL_URL))
+            self.assertEqual(enter.call_count, 3)
+            self.assertEqual([call.args for call in check.call_args_list], [(LOCAL_URL,), (LOCAL_URL,)])
+            self.assertIn(str(launcher), status.call_args_list[0].args[0])
+
     def test_wizard_checks_local_app_and_public_origin_before_enabling_funnel(self):
         with TemporaryDirectory() as directory:
             config = Path(directory) / 'test-host.json'

@@ -61,6 +61,11 @@ const paths = {
   list: '<path d="M8 6h13M8 12h13M8 18h13M3 6h1m-1 6h1m-1 6h1"/>',
   clock: '<circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/>',
   check: '<path d="m5 12 4 4 10-10"/>',
+  arrow: '<path d="M5 12h14m-6-6 6 6-6 6"/>',
+  eye: '<path d="M2 12s3.6-6.5 10-6.5S22 12 22 12s-3.6 6.5-10 6.5S2 12 2 12Z"/><circle cx="12" cy="12" r="3"/>',
+  eyeOff: '<path d="M3 3l18 18M10.6 10.6a2 2 0 0 0 2.8 2.8M9.9 5.1A10.4 10.4 0 0 1 12 5c6.4 0 10 7 10 7a16.8 16.8 0 0 1-3.3 4.3M6.6 6.6A17 17 0 0 0 2 12s3.6 7 10 7a9.7 9.7 0 0 0 4.4-1"/>',
+  image: '<rect x="3" y="4" width="18" height="16" rx="2"/><circle cx="8.5" cy="9.5" r="1.5"/><path d="m21 16-5-5-6 6-2-2-5 5"/>',
+  archive: '<rect x="3" y="4" width="18" height="5" rx="1"/><path d="M5 9v10a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V9M10 13h4"/>',
 };
 
 function icon(name, size = 20) {
@@ -114,8 +119,8 @@ function notice(message, bad = false) {
   toastTimer = setTimeout(() => { toast.className = ''; }, 5200);
 }
 
-function brand() {
-  return `<div class="brand"><img class="brand-icon" src="/assets/sparedrive-logo.png" width="42" height="42" alt=""><span>SpareDrive</span></div>`;
+function brand(subtitle = 'Household Cloud') {
+  return `<div class="brand"><img class="brand-icon" src="/assets/sparedrive-logo.png" width="38" height="38" alt=""><div class="brand-text"><span>SpareDrive</span><small>${esc(subtitle)}</small></div></div>`;
 }
 
 const roleName = role => ({ admin: 'Admin', family: 'Family', guest: 'Guest' })[role];
@@ -168,26 +173,45 @@ function avatar(user, extra = '') {
 
 const usernameField = (value = '') => `<label>Username<input name="username" value="${esc(value)}" autocomplete="username" autocapitalize="none" spellcheck="false" required></label>`;
 
+function passwordField(labelText, name, autocomplete, extraAttrs = '') {
+  return `<label>${labelText}<div class="password-field"><input name="${name}" type="password" autocomplete="${autocomplete}" ${extraAttrs}><button class="password-toggle" type="button" data-action="toggle-password" aria-label="Show password" aria-pressed="false">${icon('eye', 17)}</button></div></label>`;
+}
+
 function authView() {
   displayedPage = undefined;
   if (data.setupOnHost) {
-    app.innerHTML = '<main class="loading"><h1>SpareDrive needs setup</h1><p>Create the first admin account on the computer hosting SpareDrive.</p></main>';
+    app.innerHTML = `<main class="loading"><div class="loading-card"><img class="brand-icon" src="/assets/sparedrive-logo.png" width="46" height="46" alt=""><h1>SpareDrive needs setup</h1><p>Create the first admin account on the computer hosting SpareDrive.</p></div></main>`;
     return;
   }
   const setup = data.setup;
   const change = data.changePassword;
   const title = setup ? 'Set up SpareDrive' : change ? 'Choose your sign-in details' : 'Welcome back';
   const description = setup ? 'Create the first admin account using the setup code on your host computer. You’ll assign storage quotas from the dashboard.' : change ? 'Choose your username and replace your temporary password before opening your storage.' : 'Sign in to access your family storage.';
-  app.innerHTML = `<main class="auth-shell"><aside class="auth-side">${brand()}<div class="auth-message"><img class="auth-symbol" src="/assets/sparedrive-logo.png" width="106" height="106" alt=""><h2>Your family’s files.<br>On your own drive.</h2><p>A home for the photos and documents you choose to keep.</p></div><div class="auth-foot">${icon('shield', 18)} Private family storage</div></aside>
-    <section class="auth-main"><div class="auth-mobile">${brand()}</div><div class="auth-card"><h1>${title}</h1><p>${description}</p><form id="auth-form">
+  const submitLabel = setup ? 'Create admin account' : change ? 'Save sign-in details' : 'Sign in';
+  app.innerHTML = `<main class="auth-shell"><aside class="auth-side">${brand('Local Node')}<div class="auth-message">
+      <div class="auth-badge">${icon('lock', 14)}<span>Zero-Knowledge Architecture</span></div>
+      <h2>Your family’s files.<br><span class="auth-highlight">On your own drive.</span></h2>
+      <p>A calm, client-encrypted sanctuary for the photos, backups, and documents you choose to keep.</p>
+      <div class="auth-telemetry">
+        <div class="auth-telemetry-head"><span><span class="pulse-dot good" aria-hidden="true"></span> LOCAL NODE READY</span><span>AES-256-GCM</span></div>
+        <div class="auth-telemetry-pills">
+          <span class="auth-pill">${icon('drive', 14)} Local drive ownership</span>
+          <span class="auth-pill">${icon('shield', 14)} Client-encrypted vault</span>
+          <span class="auth-pill">${icon('lock', 14)} Private HTTPS ready</span>
+        </div>
+      </div>
+    </div><div class="auth-foot">${icon('shield', 17)}<span>Private family storage</span></div></aside>
+    <section class="auth-main"><div class="auth-mobile">${brand('Local Node')}</div><div class="auth-card">
+      <div class="auth-emblem">${icon(setup ? 'drive' : 'shield', 22)}</div>
+      <h1>${title}</h1><p>${description}</p><form id="auth-form">
       ${setup ? '<label>Setup code<input name="code" autocomplete="off" required></label><label>Display name<input name="name" autocomplete="name" maxlength="60" required></label>' : ''}
       ${usernameField(change ? data.user.username : '')}
-      ${change ? '<label>Temporary or current password<input name="current" type="password" autocomplete="current-password" required></label>' : ''}
-      <label>${change ? 'New password' : 'Password'}<input name="password" type="password" autocomplete="${setup || change ? 'new-password' : 'current-password'}" required></label>
-      <p class="form-error" role="alert" hidden></p><button class="button primary" type="submit">${setup ? 'Create admin account' : change ? 'Save sign-in details' : 'Sign in'}</button>
+      ${change ? passwordField('Temporary or current password', 'current', 'current-password', 'required') : ''}
+      ${passwordField(change ? 'New password' : 'Password', 'password', setup || change ? 'new-password' : 'current-password', 'required')}
+      <p class="form-error" role="alert" hidden></p><button class="button primary button-arrow" type="submit"><span>${submitLabel}</span>${icon('arrow', 17)}</button>
       ${change ? '<button class="button text-button" type="button" data-action="logout">Sign out</button>' :
         setup ? '' : '<button class="button text-button" type="button" data-action="change-sign-in-password">Change password</button>'}
-    </form></div></section></main>`;
+    </form><p class="auth-note">${icon('lock', 13)}<span>Personal vault passphrases never leave your browser</span></p></div></section></main>`;
   const form = document.querySelector('#auth-form');
   form.addEventListener('submit', event => {
     event.preventDefault();
@@ -220,16 +244,22 @@ function layout(content, title) {
   const toolbar = dashboard ? peopleSearch() : `<div class="breadcrumbs"><span>Workspace</span>${icon('chevron', 14)}<strong>${esc(title)}</strong></div>`;
   app.innerHTML = `<div class="shell"><aside class="sidebar">${brand()}
     <nav aria-label="Workspace">${manage}<div class="nav-group"><span class="nav-label">STORAGE</span>${storage}</div></nav>
-    <div class="sidebar-bottom"><div class="drive-status"><span class="drive-glyph">${icon('drive', 18)}</span><span>Local storage<small><i></i> Drive connected</small></span></div>
+    <div class="sidebar-bottom"><div class="drive-status"><span class="drive-glyph">${icon('drive', 18)}</span><span>Local storage<small><span class="pulse-dot good" aria-hidden="true"></span> Drive connected</small></span></div>
       <div class="profile">${avatar(data.user)}<span class="profile-name">${esc(data.user.name)}<small>${roleName(data.user.role)}</small></span><button class="icon-button sidebar-button" data-action="logout" title="Sign out" aria-label="Sign out">${icon('logout', 18)}</button></div></div></aside>
     <div class="workspace"><header class="topbar${dashboard ? ' overview-toolbar' : ''}">${toolbar}<div class="toolbar-actions"><button class="button settings-link" data-action="settings">${icon('settings', 18)}<span>Account</span></button>${dashboard ? addButton() : ''}</div></header>
     <main class="content${entering ? ' entering' : ''}">${content}</main></div></div>`;
   const gauge = document.querySelector('.allocation-gauge');
-  if (gauge) gauge.style.setProperty('--gauge-fill', `${Number(gauge.dataset.percent) * 1.8}deg`);
+  if (gauge) {
+    const circumference = 2 * Math.PI * 45;
+    const pct = Math.max(0, Math.min(100, Number(gauge.dataset.percent) || 0));
+    const offset = `${circumference * (1 - pct / 100)}`;
+    if (entering) requestAnimationFrame(() => gauge.style.setProperty('--gauge-offset', offset));
+    else gauge.style.setProperty('--gauge-offset', offset);
+  }
 }
 
-function pageTitle(name, tagline, actions = '') {
-  return `<div class="page-title"><div><h1>${name}</h1><p>${tagline}</p></div>${actions ? `<div class="page-actions">${actions}</div>` : ''}</div>`;
+function pageTitle(name, tagline, actions = '', badge = '') {
+  return `<div class="page-title"><div><div class="title-row"><h1>${name}</h1>${badge}</div><p>${tagline}</p></div>${actions ? `<div class="page-actions">${actions}</div>` : ''}</div>`;
 }
 
 function status(person) {
@@ -255,7 +285,7 @@ function personRows() {
     return `<tr><td><div class="person-cell">${avatar(person)}<div><strong>${esc(person.name)}</strong><small>@${esc(person.username)}${person.id === data.user.id ? ' · You' : ''}</small></div></div></td>
       <td><span class="badge role-${person.role}">${roleName(person.role)}</span></td>
       <td><div class="row-usage"><span><strong>${formatSize(person.used)}</strong><span> / ${formatSize(person.quota)}</span></span><progress max="100" value="${ratio(person.used, person.quota)}" aria-label="Quota usage"></progress></div></td>
-      <td><span class="status ${color}"><i></i>${label}</span>${person.role === 'family' ? `<div class="field-note">Family space ${person.familyAccess ? 'allowed' : 'blocked'}</div>` : ''}</td>
+      <td><span class="status ${color}"><span class="pulse-dot ${color}" aria-hidden="true"></span>${label}</span>${person.role === 'family' ? `<div class="field-note">Family space ${person.familyAccess ? 'allowed' : 'blocked'}</div>` : ''}</td>
       <td><button class="icon-button row-action" data-action="edit-person" data-id="${person.id}" title="Manage ${esc(person.name)}" aria-label="Manage ${esc(person.name)}">${icon('edit', 17)}</button></td></tr>`;
   }).join('');
 }
@@ -274,8 +304,8 @@ function personCard(person) {
     <div class="account-card-head"><div class="person-cell">${avatar(person)}<div><strong>${esc(person.name)}</strong>
       <small>@${esc(person.username)}${person.id === data.user.id ? ' · You' : ''}</small></div></div>
       <button class="icon-button" data-action="edit-person" data-id="${person.id}" aria-label="Manage ${esc(person.name)}" title="Manage ${esc(person.name)}">${icon('more', 19)}</button></div>
-    <div class="account-card-access"><span class="status ${color}"><i></i>${label}</span><span>${access}</span></div>
-    <div class="account-card-quota"><span>Storage</span><strong>${formatSize(person.used)} / ${formatSize(person.quota)}</strong></div>
+    <div class="account-card-access"><span class="status ${color}"><span class="pulse-dot ${color}" aria-hidden="true"></span>${label}</span><span>${access}</span></div>
+    <div class="account-card-quota"><span>Storage used</span><strong>${formatSize(person.used)} / ${formatSize(person.quota)}</strong></div>
     <progress max="100" value="${ratio(person.used, person.quota)}" aria-label="Storage used by ${esc(person.name)}"></progress>
   </article>`;
 }
@@ -296,21 +326,28 @@ function overview() {
   const pct = Math.round(ratio(drive.allocated, drive.allocatableCapacity));
   const family = data.people.filter(person => person.role !== 'guest').length;
   const guests = data.people.length - family;
-  const meter = (label, bytes) => `<div class="drive-meter"><div><span>${label}</span><strong>${formatSize(bytes)}</strong></div>
+  const meter = (label, bytes, kind = '') => `<div class="drive-meter"><div><span class="meter-title"><span class="legend-dot ${kind}" aria-hidden="true"></span><span>${label}</span></span><strong>${formatSize(bytes)}</strong></div>
     <progress max="100" value="${ratio(bytes, drive.total)}" aria-label="${label}"></progress></div>`;
-  return `<div class="overview-intro"><h1>Overview</h1><a class="button secondary" href="/storage">${icon('drive', 17)} Storage explorer</a></div>
+  return `<div class="overview-intro"><div><span class="eyebrow-pill">Household Storage Node</span><h1>Overview</h1><p>Storage allocation, drive capacity, and household access.</p></div><a class="button secondary button-arrow" href="/storage">${icon('drive', 17)}<span>Storage explorer</span>${icon('arrow', 15)}</a></div>
     <section class="drive-dashboard" aria-label="Drive and household summary">
-      <div class="drive-snapshot"><h2>Drive usage</h2><div class="drive-value">${formatSize(drive.used)}</div><p>Stored in SpareDrive</p>
-        ${meter('Assigned storage', drive.allocated)}${meter('Free on disk', drive.free)}</div>
+      <div class="drive-snapshot"><span class="snapshot-label">Drive usage</span>
+        <div class="drive-value-row"><div class="drive-value">${formatSize(drive.used)}</div><span class="space-pill">${icon('shield', 13)}<span>Local drive</span></span></div>
+        <p>Stored in SpareDrive across family and private vaults</p>
+        ${meter('Assigned storage', drive.allocated)}${meter('Free on disk', drive.free, 'free')}</div>
       <div class="drive-allocation"><h2>Storage allocation</h2>
-        <div class="allocation-gauge" data-percent="${pct}"><div class="allocation-arc" aria-hidden="true"></div><div class="allocation-label"><strong>${pct}%</strong><span>allocated</span></div></div>
+        <div class="allocation-gauge" data-percent="${pct}">
+          <svg class="allocation-ring" viewBox="0 0 110 110" aria-hidden="true"><circle class="ring-track" cx="55" cy="55" r="45"/><circle class="ring-fill" cx="55" cy="55" r="45"/></svg>
+          <div class="allocation-label"><strong>${pct}%</strong><span>allocated</span></div>
+        </div>
         <p><strong>${formatSize(drive.availableToAllocate)}</strong> available to allocate</p></div>
-      <div class="drive-accounts"><span class="summary-icon">${icon('people', 18)}</span><strong>${family}</strong><span>Family &amp; admin</span></div>
-      <div class="drive-accounts"><span class="summary-icon">${icon('exchange', 18)}</span><strong>${guests}</strong><span>${guests === 1 ? 'Guest' : 'Guests'}</span></div>
-      <div class="drive-caption"><span>${icon('drive', 15)} <strong>${esc(drive.root)}</strong></span><span>${formatSize(drive.total)} total capacity</span></div>
+      <div class="drive-stat-stack">
+        <div class="drive-accounts"><span class="summary-icon">${icon('people', 19)}</span><div class="drive-accounts-copy"><strong>${family}</strong><span>Family &amp; admin</span></div></div>
+        <div class="drive-accounts"><span class="summary-icon guest">${icon('exchange', 19)}</span><div class="drive-accounts-copy"><strong>${guests}</strong><span>${guests === 1 ? 'Guest' : 'Guests'}</span></div></div>
+      </div>
+      <div class="drive-caption"><div class="drive-caption-left"><span class="path-chip">${icon('drive', 15)} <strong>${esc(drive.root)}</strong></span><span class="caption-live"><span class="pulse-dot good" aria-hidden="true"></span> Drive connected</span></div><span class="tabular">${formatSize(drive.total)} total capacity</span></div>
     </section>
     <section class="overview-people" aria-labelledby="overview-people-title">
-      <div class="overview-section-head"><h2 id="overview-people-title">People &amp; access</h2><button class="button text-button" data-page="people">Manage people ${icon('chevron', 15)}</button></div>
+      <div class="overview-section-head"><div><h2 id="overview-people-title">People &amp; access</h2><p>Household accounts, shared access, and quota status.</p></div><button class="button text-button button-arrow" data-page="people"><span>Manage people</span>${icon('arrow', 15)}</button></div>
       <div class="account-board" id="rows">${overviewPeople()}</div>
     </section>`;
 }
@@ -344,8 +381,18 @@ function itemCheckbox(item) {
   return item.canDelete ? `<input type="checkbox" data-select-file="${itemKey(item)}" aria-label="Select ${esc(item.name)}" ${selectedFiles.has(itemKey(item)) ? 'checked' : ''} ${transfer ? 'disabled' : ''}>` : '';
 }
 
+function itemVisual(item) {
+  if (item.kind === 'folder') return ['folder', 'folder'];
+  const extension = item.name.split('.').at(-1).toLowerCase();
+  if (['png', 'jpg', 'jpeg', 'gif', 'webp', 'avif', 'bmp', 'mp3', 'ogg', 'wav', 'mp4', 'webm'].includes(extension)) return ['media', 'image'];
+  if (['zip', 'tar', 'gz', 'tgz', '7z', 'rar', 'sdvault'].includes(extension)) return ['archive', 'archive'];
+  if (['pdf', 'doc', 'docx', 'txt', 'md', 'csv', 'json', 'log'].includes(extension)) return ['doc', 'file'];
+  return ['file', 'file'];
+}
+
 function itemName(item) {
-  const glyph = `<span class="file-glyph ${item.kind}">${icon(item.kind, 19)}</span>`;
+  const [tone, symbol] = itemVisual(item);
+  const glyph = `<span class="file-glyph ${tone}">${icon(symbol, 19)}</span>`;
   if (fileView === 'trash') return `<div class="item-name">${glyph}<strong>${esc(item.name)}</strong></div>`;
   const action = item.kind === 'folder' ? 'open-folder' : 'preview-file';
   return `<button class="item-name" data-action="${action}" data-id="${itemKey(item)}" ${transfer ? 'disabled' : ''}>${glyph}<strong>${esc(item.name)}</strong></button>`;
@@ -558,7 +605,7 @@ function workspaceName() {
 function archiveList() {
   if (!data.archives.length) return '';
   return `<section class="panel exchange-list archived-list"><div class="archive-heading"><div><h2>Archived vaults</h2><p>These encrypted files count toward your storage quota.</p></div></div>
-    ${data.archives.map(item => `<div><div class="person-cell"><span class="file-glyph">${icon('lock', 18)}</span><div><strong>${formatDate(item.created)}</strong><small>${item.fileCount} ${item.fileCount === 1 ? 'file' : 'files'} · ${item.folderCount} ${item.folderCount === 1 ? 'folder' : 'folders'}</small></div></div><button class="button secondary" data-page="archive:${item.id}">Open archive</button></div>`).join('')}</section>`;
+    ${data.archives.map(item => `<div><div class="person-cell"><span class="file-glyph archive">${icon('lock', 18)}</span><div><strong>${formatDate(item.created)}</strong><small>${item.fileCount} ${item.fileCount === 1 ? 'file' : 'files'} · ${item.folderCount} ${item.folderCount === 1 ? 'folder' : 'folders'}</small></div></div><button class="button secondary" data-page="archive:${item.id}">Open archive</button></div>`).join('')}</section>`;
 }
 
 function workspace() {
@@ -568,9 +615,14 @@ function workspace() {
   const exchange = page.startsWith('exchange:');
   const target = data.people?.find(person => page === `exchange:${person.id}`);
   const name = workspaceName();
+  const badge = privateSpace
+    ? `<span class="space-pill">${icon('lock', 13)}<span>AES-256-GCM Encrypted</span></span>`
+    : familySpace
+      ? `<span class="space-pill shared">${icon('people', 13)}<span>Shared Household</span></span>`
+      : `<span class="space-pill guest">${icon('exchange', 13)}<span>Private Exchange</span></span>`;
   if (page === 'exchange' && isAdmin()) {
-    return `${pageTitle(name, 'Choose a guest to open the folder you share with them.')}
-      <section class="panel exchange-list">${data.people.filter(person => person.role === 'guest').map(person => `<div><div class="person-cell">${avatar(person)}<div><strong>${esc(person.name)}</strong><small>${person.exchange ? 'Guest access enabled' : 'Guest access disabled'}</small></div></div><button class="button secondary" data-page="exchange:${person.id}">Open folder ${icon('chevron', 15)}</button></div>`).join('')}</section>`;
+    return `${pageTitle(name, 'Choose a guest to open the folder you share with them.', '', badge)}
+      <section class="panel exchange-list">${data.people.filter(person => person.role === 'guest').map(person => `<div><div class="person-cell">${avatar(person)}<div><strong>${esc(person.name)}</strong><small>${person.exchange ? 'Guest access enabled' : 'Guest access disabled'}</small></div></div><button class="button secondary button-arrow" data-page="exchange:${person.id}"><span>Open folder</span>${icon('arrow', 15)}</button></div>`).join('')}</section>`;
   }
   const description = archive ? 'Open these files with the passphrase or recovery key for this archived vault.' : privateSpace ? 'Your browser encrypts your personal files before upload.' : familySpace ? 'Shared files for family members with access.' : target ? `Files shared between the admin and ${esc(target.name)}.` : 'Files shared between you and the admin.';
   const actions = familySpace || archive || fileView !== 'browse' || (privateSpace && !vaultKey) ? '' : fileActions();
@@ -582,7 +634,7 @@ function workspace() {
   const locked = privateSpace ? `<section class="panel vault-panel"><span class="vault-icon">${icon('lock', 31)}</span><h2>${vault.salt ? 'Your vault is locked' : 'Set up your private vault'}</h2>
     <p>${vault.salt ? 'Unlock with your vault passphrase.' : 'Choose a separate passphrase for your files. You’ll also get a recovery key to save.'}</p><button class="button primary" data-action="vault">${vault.salt ? 'Unlock vault' : 'Set up vault'}</button>
     ${archive && vault.recoveryWrap ? '<button class="button text-button" data-action="vault-recover">Use recovery key</button>' : !archive && vault.salt ? '<button class="button text-button" data-action="vault-forgot">Forgot vault passphrase?</button>' : ''}</section>` : '';
-  return `${pageTitle(name, description, back + security + lockButton + actions)}${exchange && target && !target.exchange ? '<div class="access-banner">Guest access is disabled. You can re-enable it in People & access.</div>' : ''}${usage}${transferBar()}${privateSpace && !vaultKey ? locked : fileTable()}${page === 'private' ? archiveList() : ''}`;
+  return `${pageTitle(name, description, back + security + lockButton + actions, badge)}${exchange && target && !target.exchange ? '<div class="access-banner">Guest access is disabled. You can re-enable it in People & access.</div>' : ''}${usage}${transferBar()}${privateSpace && !vaultKey ? locked : fileTable()}${page === 'private' ? archiveList() : ''}`;
 }
 
 function render() {
@@ -1306,6 +1358,15 @@ document.addEventListener('click', event => {
   if (destination) guarded(() => navigate(destination));
   if (!action) return;
   if (action === 'close') dialog.close();
+  else if (action === 'toggle-password') {
+    const field = button.closest('.password-field')?.querySelector('input');
+    if (!field) return;
+    const showing = field.type === 'text';
+    field.type = showing ? 'password' : 'text';
+    button.setAttribute('aria-label', showing ? 'Show password' : 'Hide password');
+    button.setAttribute('aria-pressed', String(!showing));
+    button.innerHTML = icon(showing ? 'eye' : 'eyeOff', 17);
+  }
   else if (action === 'add-person') addPerson();
   else if (action === 'edit-person') editPerson(id);
   else if (action === 'family-quota') setFamilyQuota();
@@ -1470,5 +1531,5 @@ try {
   await refresh();
   await navigate(isAdmin() ? 'overview' : 'private');
 } catch (error) {
-  app.innerHTML = `<main class="loading" role="alert"><h1>SpareDrive is unavailable</h1><p>${esc(error.message)}</p><p>Check the host computer and reload this page.</p></main>`;
+  app.innerHTML = `<main class="loading" role="alert"><div class="loading-card"><img class="brand-icon" src="/assets/sparedrive-logo.png" width="46" height="46" alt=""><h1>SpareDrive is unavailable</h1><p>${esc(error.message)}</p><p>Check the host computer and reload this page.</p></div></main>`;
 }
