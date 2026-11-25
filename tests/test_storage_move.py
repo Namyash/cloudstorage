@@ -127,6 +127,16 @@ class StorageMoveTest(unittest.TestCase):
         self.assertFalse(self.destination.exists())
         self.send('DELETE', f'uploads/{file_id}')
 
+    def test_stale_upload_is_removed_before_moving_storage(self):
+        self.send('PATCH', 'family', quota=1_000_000)
+        file_id = secrets.token_hex(16)
+        with patch('backend.account_and_file_api.now', return_value=int(time.time()) - 90_000):
+            self.send('POST', 'uploads', 201, id=file_id, space='family', size=40, label='test file')
+        self.move()
+        self.assertEqual(self.wait_move()['move']['phase'], 'done')
+        self.assertEqual(self.send('GET', 'storage/state').json['selected'], str(self.destination))
+        self.assertFalse((self.original / 'objects' / file_id).exists())
+
     @staticmethod
     def blob(size):
         return base64.b64encode(secrets.token_bytes(size)).decode()

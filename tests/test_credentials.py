@@ -5,6 +5,8 @@ import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 
+from unittest.mock import patch
+
 from backend.account_and_file_api import SCHEMA, create_app, now, password_hash
 
 
@@ -113,6 +115,38 @@ class CredentialTest(unittest.TestCase):
         self.send(member, 'login', username='member', password=reset['temporaryPassword'])
         self.send(member, 'password', current=reset['temporaryPassword'], password='fixture replacement password')
         self.send(admin, 'login', username='admin', password='fixture admin password')
+
+    def test_public_sign_in_throttle_leaves_host_sign_in_available(self):
+        remote = 'https://family.example.test'
+        app = create_app(self.root, public_url=remote)
+        host, visitor = app.test_client(), app.test_client()
+        self.send(host, 'setup', code=app.config['SETUP_CODE'], name='Admin',
+                  username='admin', password='test password')
+        with patch('backend.account_and_file_api.check_password', return_value=False):
+            for _ in range(8):
+                self.send(visitor, 'login', 401, origin=remote, username='admin', password='invalid')
+        self.send(visitor, 'login', 429, origin=remote, username='admin', password='test password')
+        self.send(host, 'login', username='admin', password='test password')
+
+    def test_unknown_names_share_a_bounded_throttle_bucket(self):
+        app = create_app(self.root)
+        client = app.test_client()
+        with patch('backend.account_and_file_api.hmac.digest', return_value=bytes(32)):
+            self.send(client, 'login', 401, username='unknown one', password='invalid')
+            self.send(client, 'password/change', 401, username='unknown two',
+                      current='invalid', password='new password')
+        with closing(sqlite3.connect(self.root / 'family-drive.sqlite3')) as db:
+            self.assertEqual(db.execute('SELECT key, count FROM attempts').fetchall(),
+                             [('login:local:unknown:0', 2)])
+
+    def test_invalid_unicode_fields_fail_validation_without_breaking_valid_unicode(self):
+        app = create_app(self.root)
+        client = app.test_client()
+        setup = {'code': app.config['SETUP_CODE'], 'username': 'admin', 'password': 'test password'}
+        self.send(client, 'setup', 400, name=chr(0xD800), **setup)
+        self.send(client, 'setup', name='Zo\u00eb', **setup)
+        self.send(client, 'folders', 400, id='a' * 32, space='family', label=chr(0xD800))
+        self.send(client, 'folders', 201, id='a' * 32, space='family', label='F\u00eates')
 
     def test_change_password_from_sign_in_requires_current_password_and_revokes_sessions(self):
         app = create_app(self.root)

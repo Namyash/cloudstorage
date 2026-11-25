@@ -237,7 +237,8 @@ def publish_launch_page(destination):
     temp_root = Path(gettempdir()).resolve()
     staging = Path(mkdtemp(prefix='sparedrive-vercel-', dir=temp_root))
     try:
-        directory = staging / project_name
+        # Domain labels can be reserved Windows device names, including CON and AUX.
+        directory = staging / 'sparedrive-family'
         directory.mkdir()
         write_launch_page(directory, destination)
         print('Choose your Vercel account or team and a dedicated project for the SpareDrive launch page.', flush=True)
