@@ -311,7 +311,7 @@ Requires {python}.
 
 ## Easy install
 1. Download `{INSTALLER_ASSET}` from Assets. It is the only file you need.
-2. Double-click it. It downloads this release's wheel from GitHub, checks it against the checksum built into the installer, creates a private environment, installs {product} and offers to start it.
+2. Double-click it. It downloads this release's wheel from GitHub, checks it against the checksum built into the installer, creates a private environment, installs {product}, and offers to set up internet access (the Tailscale link and an optional Vercel launch page) and to start it.
 3. Open [{product}](http://127.0.0.1:8765/), enter the setup code shown in the terminal, select a dedicated folder on your data drive, and create your admin account.
 
 Run the installer of a newer release to upgrade. Your data and settings are never touched.

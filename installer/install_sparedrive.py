@@ -6,10 +6,13 @@ the installer downloads exactly the wheel it was built with and refuses a differ
 
 Double-click Install-SpareDrive.cmd. It downloads the wheel, checks its checksum, creates a private
 environment, installs the wheel with its dependencies, checks the result, and writes
-Start-SpareDrive.cmd and Configure-Internet-Access.cmd. Household data and settings are never touched,
-so running a newer installer upgrades the program.
+Start-SpareDrive.cmd and Configure-Internet-Access.cmd. It then offers to set up internet access
+(the Tailscale link and an optional Vercel launch page, through the sparedrive-remote wizard) and to
+start SpareDrive. Household data and settings are never touched, so running a newer installer
+upgrades the program.
 
-    Install-SpareDrive.cmd [--folder DIR] [--start | --no-start] [--wheel FILE] [--base-url URL]
+    Install-SpareDrive.cmd [--folder DIR] [--start | --no-start] [--internet | --no-internet]
+                           [--wheel FILE] [--base-url URL]
 
 Uses only the Python standard library.
 """
@@ -119,6 +122,37 @@ def write_launchers(folder: Path) -> list[Path]:
     return [folder / name for name in launchers]
 
 
+def ask(question: str, default: bool) -> bool:
+    answer = input(f'\n{question} [{"Y/n" if default else "y/N"}] ').strip().lower()
+    return default if not answer else answer in ('y', 'yes')
+
+
+def start_in_new_window(server: Path) -> bool:
+    """Open SpareDrive in its own console window, kept open so a startup error can be read. Windows only."""
+    if not WINDOWS:
+        return False
+    subprocess.Popen(['cmd', '/k', str(server)], creationflags=subprocess.CREATE_NEW_CONSOLE)
+    return True
+
+
+def set_up_internet(server: Path) -> int:
+    """Run the internet wizard, which is the Tailscale link and an optional Vercel launch page.
+
+    The wizard waits until SpareDrive is running with its first admin account, so SpareDrive is opened in a
+    second window while the wizard continues in this one.
+    """
+    if start_in_new_window(server):
+        print('\nSpareDrive is starting in a new window. If this is a new household, open http://127.0.0.1:8765/ in your '
+              'browser, enter the setup code shown in that window, choose your drive and create the admin account.')
+    else:
+        print(f'\nStart SpareDrive in another terminal now: {server}')
+    print('The internet setup continues here: it asks about Tailscale Funnel and, at the end, an optional Vercel launch page.\n')
+    try:
+        return subprocess.call([str(command_path(server.parent, INTERNET_COMMAND))])
+    except KeyboardInterrupt:
+        return 1
+
+
 def install(wheel: Path, folder: Path) -> Path:
     match = WHEEL_NAME.fullmatch(wheel.name)
     if match is None:
@@ -150,7 +184,10 @@ def main() -> int:
     parser.add_argument('--base-url', help='Download the wheel from this address instead of the GitHub release.')
     start = parser.add_mutually_exclusive_group()
     start.add_argument('--start', action='store_true', help='Start SpareDrive when the install finishes.')
-    start.add_argument('--no-start', action='store_true', help='Do not ask to start SpareDrive.')
+    start.add_argument('--no-start', action='store_true', help='Do not ask to start SpareDrive or to set up internet access.')
+    internet = parser.add_mutually_exclusive_group()
+    internet.add_argument('--internet', action='store_true', help='Set up internet access when the install finishes.')
+    internet.add_argument('--no-internet', action='store_true', help='Do not ask about internet access.')
     args = parser.parse_args()
     folder = args.folder.expanduser().resolve()
 
@@ -181,9 +218,11 @@ def main() -> int:
         print(f'Set up internet access:    {command_path(server.parent, INTERNET_COMMAND)}')
     print('Then open http://127.0.0.1:8765/ and enter the setup code shown in the terminal.')
 
-    wants_start = args.start or (not args.no_start and sys.stdin.isatty()
-                                 and input('\nStart SpareDrive now? [Y/n] ').strip().lower() in ('', 'y', 'yes'))
-    if wants_start:
+    asking = sys.stdin.isatty() and not args.no_start  # Prompts only for a person at a terminal.
+    if args.internet or (asking and not args.no_internet
+                         and ask('Set up internet access now (Tailscale link and optional Vercel launch page)?', default=False)):
+        return set_up_internet(server)
+    if args.start or (asking and ask('Start SpareDrive now?', default=True)):
         try:
             return subprocess.call([str(server)])
         except KeyboardInterrupt:
