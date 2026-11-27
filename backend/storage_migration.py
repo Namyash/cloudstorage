@@ -24,7 +24,8 @@ def move_household(source, target, storage_id, new_storage_id, reserve, report):
     db_file = source / 'family-drive.sqlite3'
     with closing(sqlite3.connect(db_file.as_uri() + '?mode=ro', uri=True, timeout=15)) as original:
         if original.execute("SELECT 1 FROM files WHERE state = 'uploading' LIMIT 1").fetchone():
-            raise ValueError('Finish or cancel private and shared uploads before moving storage.')
+            raise ValueError('Finish or cancel private and shared uploads before moving storage. '
+                             'Interrupted uploads are cleared automatically, so try again later if none are running.')
         files = original.execute("SELECT id, stored FROM files WHERE state = 'ready'").fetchall()
         allocated = original.execute('SELECT COALESCE(SUM(quota), 0) FROM users').fetchone()[0]
         allocated += int(original.execute("SELECT value FROM config WHERE key = 'family_quota'").fetchone()[0])

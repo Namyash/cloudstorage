@@ -1419,6 +1419,7 @@ button.item-name:hover strong { color: var(--emerald); text-decoration: underlin
 .archived-list { margin-top: 20px; }
 .archive-heading { padding-top: 14px; padding-bottom: 6px; }
 .archive-heading p { margin-top: 4px; color: var(--muted); font-size: 0.87rem; }
+.archive-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 8px; }
 
 /* Split Atmospheric Auth Screen */
 .auth-shell {

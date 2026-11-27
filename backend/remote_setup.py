@@ -113,9 +113,12 @@ def funnel_needs_setup(tailscale, hostname, local_url):
     address = f'{hostname}:{HTTPS_PORT}'
     web = status.get('Web') or {}
     handlers = web.get(address, {}).get('Handlers', {})
-    public = (status.get('AllowFunnel') or {}).get(address) is True
-    if public and set(handlers) == {'/'} and handlers['/'].get('Proxy') == local_url:
-        return False
+    if set(handlers) == {'/'} and handlers['/'].get('Proxy') == local_url:
+        if (status.get('AllowFunnel') or {}).get(address) is True:
+            return False
+        # A private `tailscale serve` route to this SpareDrive only needs Funnel turned on.
+        status = dict(status, Web={key: value for key, value in web.items() if key != address},
+                      TCP={port: value for port, value in (status.get('TCP') or {}).items() if port != str(HTTPS_PORT)})
     configs = [status, *(status.get('Foreground') or {}).values()]
     for config in configs:
         if str(HTTPS_PORT) in (config.get('TCP') or {}) or any(

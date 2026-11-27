@@ -21,7 +21,7 @@ The installed package also provides the `sparedrive` command. The existing `fami
 4. On **Overview**, use the pencil next to your admin account to set your personal quota. Open **Family space → Set quota** to assign the household quota. Both start at 0 GB. Use **Add person** to create family or guest accounts and enter their quotas. Send temporary passwords privately so each person can choose their own username and password on the first visit.
 5. Keep the host computer and launcher running while people use the drive. `Ctrl+C` stops the server. Start it again with the same launcher and drive attached.
 
-The launcher saves the selected path and storage identity in `.runtime/host.json` inside the application folder. An administrator can open **Storage explorer** in the sidebar to view drive status, capacity, folders, and file details. If the storage drive disconnects, the local site shows an offline page. Reconnect it to resume, or use the terminal setup code and **Reconnect this folder** if Windows assigned it a different drive letter. Keep the storage folder together when moving it.
+The launcher saves the selected path and storage identity in `.runtime/host.json` inside the application folder. An administrator can open **Storage explorer** in the sidebar to view drive status, capacity, folders, and file details. If the storage drive disconnects, the local site shows an offline page. Reconnect it to resume. SpareDrive checks the connected drives every few seconds, up to two folders deep, and reopens a household it finds there, even on a different drive letter or under a different folder name. If it finds exactly one household and the saved one is missing, it switches to that one and remembers it. If it finds several, it keeps waiting until you pick one in Storage explorer with the terminal setup code. Keep the storage folder together when moving it.
 
 ## Change the active drive or folder
 
@@ -32,7 +32,7 @@ On the host computer, sign in as the admin and open **Storage explorer → Chang
 - **My files.** Every account has a personal vault. The browser encrypts filenames and file contents before sending them to the drive. Each person sets a separate vault passphrase. Save the recovery key generated during setup. The vault locks after 10 minutes of inactivity or when you leave the vault. A sign-in password reset keeps the original vault passphrase.
 - **Family space.** The admin always has access and can grant or revoke access for each member in **People & access → Manage account**. **Allow Family space access** controls shared files. **Allow sign-in** controls the entire account. Existing family members start with shared access enabled. The admin sets a separate shared quota, and the uploader or admin can rename and delete shared files.
 - **Guest exchange.** The admin can enable a separate shared folder for a guest, give their account an expiry, or pause their access. Guests have personal storage even when their exchange folder is disabled. A user's own guest-exchange uploads count against that user's quota.
-- **Storage limits.** Quotas are in decimal GB. The server reserves space when an upload begins, checks available disk space, and keeps 512 MiB of free disk headroom. Each account can own up to 25,000 files and folders across all spaces, including items in Trash and archived vaults. Private files use a small amount of extra space for encryption. Stale uploads are cleared after 24 hours at startup or when the next upload begins.
+- **Storage limits.** Quotas are in decimal GB. The server reserves space when an upload begins, checks available disk space, and keeps 512 MiB of free disk headroom. Each account can own up to 25,000 files and folders across all spaces, including items in Trash and archived vaults. Private files use a small amount of extra space for encryption. An interrupted upload, such as one from a closed tab, stops counting against the quota once it has made no progress for 30 minutes. SpareDrive clears it the next time anyone starts an upload, removes a folder, changes a quota or an account, or moves storage. Pausing an account, resetting its password, or turning off its Family space or guest-exchange access cancels the uploads it can no longer finish.
 - **Drive usage.** The overview shows the storage folder, actual free disk space, total assigned quotas, and the amount you can still allocate. Each household runs its own instance and uses the drive it chooses.
 
 Shared files are stored as ordinary files and protected by account permissions. Private file names and contents are encrypted, while the server has access to account names, file sizes, and timestamps. Trust the host and the website code it serves. Someone who controls that code could replace it to capture passphrases in future sessions. Keep the host and its dependencies updated. Use a separate offline backup of the whole data folder, including the SQLite database and `.family-drive-id`. Stop SpareDrive while making a filesystem copy of the data folder, and test a restore before relying on the drive for your only copy.
@@ -45,7 +45,7 @@ For private downloads over 256 MiB, use a desktop browser that supports the file
 - **Find.** Switch between list and grid views, search the current space, or sort by name, upload date, or size. **Recent** shows files by upload date. **Starred** shows favorites for the signed-in account.
 - **Manage.** Use **More actions** to rename, move, copy, or download an item where applicable. To move several items, select them and choose **Move**. You can also drag a file or folder onto another folder within the same space. Select a filename to preview supported images, text, audio, and video. Other formats can be downloaded.
 - **Recover.** **Move to Trash** removes an item from the active view and keeps its storage allocated. Open **Trash** to restore an item or choose **Delete forever** to reclaim its space. Deleting a folder forever also removes its contents.
-- **Access.** In **My files**, the browser encrypts folder names, filenames, and the file contents. In **Family space** and **Guest exchange**, the owner or admin manages an item. An admin is required to trash or permanently delete a folder containing other people's items. Moves and copies stay within the current space. Archived vaults can be browsed and downloaded.
+- **Access.** In **My files**, the browser encrypts folder names, filenames, and the file contents. In **Family space** and **Guest exchange**, the owner or admin manages an item. An admin is required to trash or permanently delete a folder containing other people's items. Moves and copies stay within the current space. Archived vaults can be browsed, downloaded, or deleted.
 
 ## Manage your sign-in
 
@@ -54,7 +54,7 @@ Open **Account** to change your username or password. From the sign-in screen, *
 ## Recover or reset a private vault
 
 - From **My files**, choose **Forgot vault passphrase?** and **Use recovery key** if you saved one for this vault. Enter it and choose a new passphrase to keep your files in place. Save the new recovery key shown afterward.
-- To start fresh, select **Start fresh and keep archive** and confirm with your SpareDrive sign-in password. The original encrypted files move to **Archived vaults**, where they still count toward your quota. To download them, open the archive using its original passphrase or a recovery key saved for that archive. For an empty vault, the action is **Reset empty vault**.
+- To start fresh, select **Start fresh and keep archive** and confirm with your SpareDrive sign-in password. The original encrypted files move to **Archived vaults**, where they still count toward your quota. To download them, open the archive using its original passphrase or a recovery key saved for that archive. To free that space, select **Delete** next to the archive and confirm with your sign-in password; this permanently removes its files. For an empty vault, the action is **Reset empty vault**.
 - With **My files** unlocked, open **Vault security** to change your passphrase or generate a recovery key. This also works for vaults created before recovery keys were available, as long as you know the current vault passphrase.
 
 ## Connect family devices over private HTTPS
@@ -80,10 +80,6 @@ Funnel makes the SpareDrive sign-in page publicly reachable. SpareDrive accounts
 
 Funnel is subject to bandwidth limits. Check [Vercel plan terms](https://vercel.com/docs/limits/fair-use-guidelines) before commercial deployment.
 
-## Deploy with Coolify
-
-For a Windows home computer with a removable drive, use the [Coolify Windows gateway](deploy/coolify/README.md). The Windows launcher continues to discover drives, manage storage, and serve the existing accounts and files. Coolify manages the browser gateway.
-
 ## Build the package from source
 
 The project separates the browser assets and Python service:
@@ -96,6 +92,7 @@ backend/    Python service
   drive_discovery.py       Detects drives and validates storage paths
   storage_migration.py     Copies and verifies data during a drive move
 tests/      Account, storage, and file management regression tests
+ci/         Jenkinsfile and release_tools.py for automated releases
 start.py    Source launcher used by npm run dev
 ```
 
@@ -105,6 +102,17 @@ python -m build
 ```
 
 Run the regression checks with `python -m unittest discover -s tests` from the project root after installing the app dependencies. The wheel includes the frontend and still launches with `python -m family_drive`.
+
+## Automated releases
+
+`ci/Jenkinsfile` is a Jenkins Multibranch Pipeline. A pull request is checked only. A push to `main` is checked and then released:
+
+1. Static checks: ruff, a compile of every Python file, a syntax check of the frontend scripts, and a consistency check of `pyproject.toml`, `requirements.txt` and this README.
+2. The unit tests on Python 3.10, 3.12 and 3.13.
+3. The wheel is built, checked for every packaged file, version, dependency and command, installed into a clean environment, and smoke-tested.
+4. The wheel and `SHA256SUMS.txt` are published as a GitHub release `vX.Y.Z`, and the tag is created on the tested commit.
+
+Each release takes the next patch number above the newest `vX.Y.Z` tag. The first release uses the version in `pyproject.toml`. To start a new minor or major version, raise the version in `pyproject.toml`. The Jenkins job needs a token credential named `github-cloudstorage-credentials` with write access to the repository's contents. The header of `ci/Jenkinsfile` lists the job settings and what the build agent needs.
 
 ## Run with a custom host configuration
 

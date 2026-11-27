@@ -34,7 +34,10 @@ CHUNK = 4 * 1024 * 1024
 OVERHEAD = 28  # 12-byte IV and 16-byte authentication tag
 MIN_FREE = 512 * 1024 * 1024
 SESSION_AGE = 12 * 60 * 60
-UPLOAD_AGE = 24 * 60 * 60
+# Uploads cannot resume, so one that receives no chunk for this long was interrupted.
+# The wait must exceed the time a slow connection needs to send a single chunk.
+UPLOAD_IDLE = 30 * 60
+UPLOAD_IDLE_NOTE = f'Interrupted uploads are cleared after {UPLOAD_IDLE // 60} minutes.'
 ACCOUNT_ITEM_LIMIT = 25_000
 ID = re.compile(r'[a-f0-9]{32}')
 COOKIE = 'family_drive_session'
@@ -89,6 +92,15 @@ def now():
     return int(time.time())
 
 
+def server_options():
+    """Waitress settings for every entry point.
+
+    Waitress reads a whole request body before Flask runs, so only the server can refuse an
+    oversized body before it fills memory or temporary storage.
+    """
+    return {'threads': 6, 'max_request_body_size': CHUNK + OVERHEAD, 'inbuf_overflow': CHUNK + OVERHEAD + 1}
+
+
 def session_hash(token):
     return hashlib.sha256(token.encode()).hexdigest()
 
@@ -105,6 +117,15 @@ def check_password(password, stored):
     return stored is not None and hmac.compare_digest(candidate, stored)
 
 
+def storable(text):
+    """Whether text can be saved as UTF-8. JSON escapes can carry unpaired surrogates, which SQLite rejects."""
+    try:
+        text.encode('utf-8')
+    except UnicodeEncodeError:
+        return False
+    return True
+
+
 def credential_text(value, label, *, trim=False):
     if not isinstance(value, str):
         abort(400, f'Enter your {label}.')
@@ -112,9 +133,7 @@ def credential_text(value, label, *, trim=False):
         value = value.strip()
     if not value:
         abort(400, f'Enter your {label}.')
-    try:
-        value.encode('utf-8')
-    except UnicodeEncodeError:
+    if not storable(value):
         abort(400, f'Enter a valid {label}.')
     return value
 
@@ -127,6 +146,8 @@ def named_account(data):
     name = data.get('name')
     if not isinstance(name, str) or not 1 <= len(name.strip()) <= 60:
         abort(400, 'Enter a display name of up to 60 characters.')
+    if not storable(name):
+        abort(400, 'Enter a valid display name.')
     return name.strip(), credential_text(data.get('username'), 'username', trim=True)
 
 
@@ -151,7 +172,8 @@ def encoded(value, minimum, maximum):
 def file_label(space, label):
     if space == 'private':
         return encoded(label, 29, 1052)
-    if not isinstance(label, str) or not 1 <= len(label) <= 255 or re.search(r'[\x00-\x1f\x7f/\\]', label) or label in ('.', '..'):
+    if (not isinstance(label, str) or not 1 <= len(label) <= 255 or label in ('.', '..')
+            or re.search(r'[\x00-\x1f\x7f/\\]', label) or not storable(label)):
         abort(400, 'Invalid filename.')
     return label
 
@@ -159,6 +181,8 @@ def file_label(space, label):
 def guest_expiry(value, previous=None):
     if value in (None, ''):
         return None
+    if isinstance(value, str) and value.endswith(('Z', 'z')):
+        value = value[:-1] + '+00:00'  # Browsers send UTC as "Z", which Python 3.10 cannot parse.
     try:
         parsed = datetime.fromisoformat(value)
         stamp = int(parsed.timestamp()) if parsed.tzinfo else 0
@@ -290,8 +314,15 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
                 db.execute("DELETE FROM stars WHERE kind = 'file' AND item_id = ?", (row['id'],))
 
     def expire_uploads():
-        connection().execute("UPDATE files SET state = 'removed' WHERE state = 'uploading' AND modified < ?", (now() - UPLOAD_AGE,))
+        connection().execute("UPDATE files SET state = 'removed' WHERE state = 'uploading' AND modified < ?", (now() - UPLOAD_IDLE,))
         clean_removed()
+
+    def cancel_uploads(db, owner, space=None):
+        """Stop an account's unfinished uploads, optionally in one space, and return how many stopped."""
+        sql, values = "UPDATE files SET state = 'removed' WHERE owner = ? AND state = 'uploading'", (owner,)
+        if space is not None:
+            sql, values = sql + ' AND space = ?', (owner, space)
+        return db.execute(sql, values).rowcount
 
     with app.app_context():
         expire_uploads()
@@ -416,6 +447,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         throttle('storage-move:' + user['id'], 8)
         if not check_password(password, user['password']):
             abort(400, 'The sign-in password is incorrect.')
+        expire_uploads()
         try:
             return jsonify(storage_move(values)), 202
         except (ValueError, PermissionError) as error:
@@ -447,8 +479,11 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
 
     sign_in_failed = 'The username or password is incorrect, or the account is inactive.'
 
+    def sign_in_attempts(key):
+        return 'login:' + session_hash(key)
+
     def verify_sign_in(key, password):
-        attempt_key = 'login:' + session_hash(key)
+        attempt_key = sign_in_attempts(key)
         throttle(attempt_key, 8)
         user = one('SELECT id, password, change_password FROM users WHERE username_key = ? AND active = 1 '
                    'AND (expires IS NULL OR expires > ?)', (key, now()))
@@ -644,7 +679,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
                 abort(409, 'Your account or vault changed. Reload before continuing.')
             pending = one("SELECT 1 FROM files WHERE owner = ? AND space = 'private' AND state = 'uploading'", (user['id'],))
             if pending:
-                abort(409, 'Finish or cancel the active private upload before resetting the vault.')
+                abort(409, f'Finish or cancel the active private upload before resetting the vault. {UPLOAD_IDLE_NOTE}')
             ready = one("SELECT COUNT(*) AS amount FROM files WHERE owner = ? AND space = 'private' AND state = 'ready' AND archive_id IS NULL", (user['id'],))['amount']
             has_folders = one("SELECT 1 FROM folders WHERE owner = ? AND space = 'private' AND archive_id IS NULL", (user['id'],))
             if ready or has_folders:
@@ -659,6 +694,29 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
                           vault_revision = vault_revision + 1 WHERE id = ?''', (user['id'],))
             db.execute('DELETE FROM attempts WHERE key = ?', ('vault-reset:' + user['id'],))
         return jsonify(ok=True, archived=ready, archiveCreated=bool(ready or has_folders))
+
+    @app.post('/api/archives/<archive_id>/delete')
+    def delete_archive(archive_id):
+        user = require_user()
+        if not ID.fullmatch(archive_id):
+            abort(404, 'Archived vault not found.')
+        password = credential_text(json_body().get('password'), 'SpareDrive sign-in password')
+        throttle('archive-delete:' + user['id'], 8)
+        if not check_password(password, user['password']):
+            abort(400, 'The sign-in password is incorrect.')
+        with write() as db:
+            if not one('SELECT 1 FROM vault_archives WHERE id = ? AND owner = ?', (archive_id, user['id'])):
+                abort(404, 'Archived vault not found.')
+            archived_folders = 'SELECT id FROM folders WHERE archive_id = ?'
+            # Detach every row that points at the archive so the foreign keys allow deleting it.
+            db.execute(f'UPDATE files SET folder_id = NULL WHERE folder_id IN ({archived_folders})', (archive_id,))
+            db.execute("UPDATE files SET state = 'removed', archive_id = NULL WHERE archive_id = ?", (archive_id,))
+            db.execute(f"DELETE FROM stars WHERE kind = 'folder' AND item_id IN ({archived_folders})", (archive_id,))
+            db.execute('DELETE FROM folders WHERE archive_id = ?', (archive_id,))
+            db.execute('DELETE FROM vault_archives WHERE id = ?', (archive_id,))
+            db.execute('DELETE FROM attempts WHERE key = ?', ('archive-delete:' + user['id'],))
+        clean_removed()
+        return jsonify(ok=True)
 
     def allocation_capacity(free):
         claimed = one("SELECT COALESCE(SUM(received), 0) AS amount FROM files WHERE state != 'removed'")['amount']
@@ -708,6 +766,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         actor = require_user(admin=True)
         data = json_body()
         quota = number(data.get('quota'), 'quota')
+        expire_uploads()
         with write() as db:
             user = one('SELECT * FROM users WHERE id = ?', (uid,))
             if not user:
@@ -728,9 +787,18 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
                        (quota, active, expires, int(exchange), shared, uid))
             if not active:
                 db.execute('DELETE FROM sessions WHERE user_id = ?', (uid,))
-            cancelled = 0
-            if user['role'] == 'family' and (not active or not shared):
-                cancelled = db.execute("UPDATE files SET state = 'removed' WHERE owner = ? AND space = 'family' AND state = 'uploading'", (uid,)).rowcount
+            elif not user['active']:
+                # Sign-in attempts made while paused must not lock out the reactivated account.
+                db.execute('DELETE FROM attempts WHERE key = ?', (sign_in_attempts(user['username_key']),))
+            # Uploads the account can no longer finish would otherwise hold its quota until they expire.
+            if not active:
+                cancelled = cancel_uploads(db, uid)
+            elif user['role'] == 'family' and not shared:
+                cancelled = cancel_uploads(db, uid, 'family')
+            elif user['role'] == 'guest' and not exchange:
+                cancelled = cancel_uploads(db, uid, 'exchange:' + uid)
+            else:
+                cancelled = 0
         if cancelled:
             clean_removed()
         return jsonify(ok=True)
@@ -743,17 +811,23 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         temporary = secrets.token_urlsafe(18)
         password = password_hash(temporary)
         with write() as db:
-            user = one('SELECT username FROM users WHERE id = ?', (uid,))
+            user = one('SELECT username, username_key FROM users WHERE id = ?', (uid,))
             if not user:
                 abort(404, 'Account not found.')
             db.execute('UPDATE users SET password = ?, change_password = 1 WHERE id = ?', (password, uid))
             db.execute('DELETE FROM sessions WHERE user_id = ?', (uid,))
+            # The new temporary password starts without earlier sign-in or password-change failures.
+            db.execute('DELETE FROM attempts WHERE key IN (?, ?)', (sign_in_attempts(user['username_key']), 'password:' + uid))
+            cancelled = cancel_uploads(db, uid)  # Revoked sessions cannot finish them.
+        if cancelled:
+            clean_removed()
         return jsonify(username=user['username'], temporaryPassword=temporary)
 
     @app.patch('/api/family')
     def edit_family():
         require_user(admin=True)
         quota = number(json_body().get('quota'), 'quota')
+        expire_uploads()
         with write() as db:
             if quota < usage(space='family', reserved=True):
                 abort(409, 'The new quota is below the Family Space usage.')
@@ -1035,7 +1109,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
     def check_folder_removal(folder_id):
         if one(FOLDER_TREE + """SELECT 1 FROM files WHERE folder_id IN (SELECT id FROM tree)
                                  AND state = 'uploading' LIMIT 1""", (folder_id,)):
-            abort(409, 'Finish the uploads in this folder before removing it.')
+            abort(409, f'Finish the uploads in this folder before removing it. {UPLOAD_IDLE_NOTE}')
         if g.user['role'] != 'admin' and one(FOLDER_TREE + '''
                 SELECT 1 FROM folders WHERE id IN (SELECT id FROM tree) AND owner <> ?
                 UNION ALL SELECT 1 FROM files WHERE folder_id IN (SELECT id FROM tree)
@@ -1068,6 +1142,8 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
             if not isinstance(kind, str) or kind not in ITEM_TABLES or not isinstance(item_id, str) or not ID.fullmatch(item_id):
                 abort(400, 'Invalid item.')
             keys[(kind, item_id)] = None
+        if action in {'trash', 'purge'}:
+            expire_uploads()  # Interrupted uploads must not block removing their folder.
         with write() as db:
             if action == 'star':
                 starred = data.get('starred')
@@ -1137,8 +1213,7 @@ if __name__ == '__main__':
     buffer_folder = folder / '.http-tmp'
     buffer_folder.mkdir(exist_ok=True)
     tempfile.tempdir = str(buffer_folder)
-    server = create_server(site, host='127.0.0.1', port=args.port, threads=6,
-                           max_request_body_size=CHUNK + OVERHEAD, inbuf_overflow=CHUNK + OVERHEAD + 1)
+    server = create_server(site, host='127.0.0.1', port=args.port, **server_options())
     print(f'SpareDrive is available at http://127.0.0.1:{args.port}', flush=True)
     if site.config['SETUP_CODE']:
         print('One-time admin setup code: ' + site.config['SETUP_CODE'], flush=True)

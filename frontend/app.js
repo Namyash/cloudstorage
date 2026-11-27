@@ -605,7 +605,24 @@ function workspaceName() {
 function archiveList() {
   if (!data.archives.length) return '';
   return `<section class="panel exchange-list archived-list"><div class="archive-heading"><div><h2>Archived vaults</h2><p>These encrypted files count toward your storage quota.</p></div></div>
-    ${data.archives.map(item => `<div><div class="person-cell"><span class="file-glyph archive">${icon('lock', 18)}</span><div><strong>${formatDate(item.created)}</strong><small>${item.fileCount} ${item.fileCount === 1 ? 'file' : 'files'} · ${item.folderCount} ${item.folderCount === 1 ? 'folder' : 'folders'}</small></div></div><button class="button secondary" data-page="archive:${item.id}">Open archive</button></div>`).join('')}</section>`;
+    ${data.archives.map(item => `<div><div class="person-cell"><span class="file-glyph archive">${icon('lock', 18)}</span><div><strong>${formatDate(item.created)}</strong><small>${archiveContents(item)}</small></div></div><div class="archive-actions"><button class="button secondary" data-page="archive:${item.id}">Open archive</button><button class="button secondary" data-action="archive-delete" data-id="${item.id}">Delete</button></div></div>`).join('')}</section>`;
+}
+
+const archiveContents = item => `${item.fileCount} ${item.fileCount === 1 ? 'file' : 'files'} · ${item.folderCount} ${item.folderCount === 1 ? 'folder' : 'folders'}`;
+
+function deleteArchive(id) {
+  const archive = data.archives.find(item => item.id === id);
+  if (!archive) return;
+  formDialog('Delete archived vault?', `<strong>Archive from ${formatDate(archive.created)}</strong> · ${archiveContents(archive)}`,
+    '<p>This permanently deletes every file and folder in this archive and frees its storage. It cannot be undone, even with the archive’s passphrase or recovery key.</p><label>SpareDrive sign-in password<input name="password" type="password" autocomplete="current-password" required></label>',
+    'Delete forever', async values => {
+      await api(`archives/${archive.id}/delete`, { method: 'POST', data: { password: values.password } });
+      dialog.close();
+      await refresh();
+      render();
+      notice('Archived vault deleted.');
+    });
+  dialog.querySelector('button[type="submit"]').classList.replace('primary', 'danger');
 }
 
 function workspace() {
@@ -1380,6 +1397,7 @@ document.addEventListener('click', event => {
   else if (action === 'vault-forgot') forgotVault();
   else if (action === 'vault-reset') resetVaultDialog();
   else if (action === 'vault-recover') recoverVault();
+  else if (action === 'archive-delete') deleteArchive(id);
   else if (action === 'vault-security') vaultSecurity();
   else if (action === 'vault-change') updateVaultSecurity(true);
   else if (action === 'vault-new-key') updateVaultSecurity(false);

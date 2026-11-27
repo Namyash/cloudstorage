@@ -2,6 +2,7 @@
 
 import ctypes
 from ctypes import wintypes
+import ntpath
 import os
 from pathlib import Path, PureWindowsPath
 import re
@@ -11,8 +12,22 @@ import string
 from uuid import UUID
 
 
+HOUSEHOLD_ID = re.compile(r'[0-9a-f]{32}')  # What SpareDrive writes to .family-drive-id.
+HOUSEHOLD_SEARCH_DEPTH = 2  # Folders below a drive root, such as E:\SpareDriveData or E:\Family\SpareDriveData.
+HOUSEHOLD_SEARCH_LIMIT = 2000  # Folders examined per drive, so a huge drive cannot stall a request.
+HOUSEKEEPING_FOLDERS = {'$recycle.bin', 'system volume information'}
+
+
 def system_drive():
     return os.environ.get('SystemDrive', 'C:').rstrip('\\/').casefold()
+
+
+def reserved_name(name):
+    """Whether Windows reserves this file name, such as CON, NUL or COM1."""
+    # Python 3.13 added ntpath.isreserved and 3.15 removed PurePath.is_reserved.
+    if hasattr(ntpath, 'isreserved'):
+        return ntpath.isreserved(name)
+    return PureWindowsPath(name).is_reserved()
 
 
 def is_windows_data_drive(root, allow_system=False):
@@ -109,7 +124,7 @@ def joined_folder(drive, relative, allow_system=False):
     parts = relative.split('/') if relative else []
     current = root
     for part in parts:
-        if not part or part.endswith(('.', ' ')) or PureWindowsPath(part).is_reserved() or PureWindowsPath(part).name != part or '\\' in part or ':' in part:
+        if not part or part.endswith(('.', ' ')) or reserved_name(part) or PureWindowsPath(part).name != part or '\\' in part or ':' in part:
             raise ValueError('Invalid folder path.')
         if (current / '.family-drive-id').is_file():
             raise PermissionError('This folder contains protected SpareDrive data.')
@@ -121,14 +136,61 @@ def joined_folder(drive, relative, allow_system=False):
     return current
 
 
-def household_matches(folder, expected):
-    if not expected:
-        return False
+def household_id(folder):
+    """The identity of the SpareDrive household stored in this folder, or None if it holds none."""
     try:
-        return ((folder / '.family-drive-id').read_text(encoding='ascii') == expected
-                and (folder / 'family-drive.sqlite3').is_file())
+        if not (folder / 'family-drive.sqlite3').is_file():
+            return None
+        return (folder / '.family-drive-id').read_text(encoding='ascii')
     except (OSError, UnicodeError):
-        return False
+        return None
+
+
+def household_matches(folder, expected):
+    return bool(expected) and household_id(folder) == expected
+
+
+def subfolders(folder):
+    """Real subfolders of a folder, skipping Windows housekeeping folders and linked folders."""
+    found = []
+    try:
+        with os.scandir(folder) as listing:
+            for entry in listing:
+                try:
+                    if (entry.name.casefold() in HOUSEKEEPING_FOLDERS or not entry.is_dir(follow_symlinks=False)
+                            or entry.stat(follow_symlinks=False).st_file_attributes & stat.FILE_ATTRIBUTE_REPARSE_POINT):
+                        continue
+                except OSError:
+                    continue
+                found.append(Path(entry.path))
+    except OSError:
+        pass  # An unreadable folder cannot hold a household we could open anyway.
+    return found
+
+
+def households_under(root):
+    """Find SpareDrive households in folders up to HOUSEHOLD_SEARCH_DEPTH levels below a drive root."""
+    found = []
+    pending = [(root, 0)]
+    examined = 0
+    while pending and examined < HOUSEHOLD_SEARCH_LIMIT:
+        folder, depth = pending.pop(0)
+        examined += 1
+        identity = household_id(folder) if depth else None
+        if identity and HOUSEHOLD_ID.fullmatch(identity):
+            found.append((folder, identity))  # A household's own folders are not searched further.
+        elif depth < HOUSEHOLD_SEARCH_DEPTH:
+            pending.extend((child, depth + 1) for child in subfolders(folder))
+    return found
+
+
+def find_households(volumes, allow_system=False):
+    """Every household on the connected drives that SpareDrive is allowed to use, as (folder, identity)."""
+    found = []
+    for volume in volumes:
+        if volume['eligible'] or (allow_system and volume['system'] and volume['ready']):
+            found.extend(households_under(Path(volume['drive'] + '\\')))
+    return found
 
 
 def relocated_storage_folder(saved_folder, expected, allow_system=False):
@@ -181,7 +243,7 @@ def selected_folder(drive, relative, new_name, allow_system=False):
         raise ValueError('Enter a folder name of up to 100 characters.')
     if new_name:
         if (re.search(r'[<>:"/\\|?*\x00-\x1f]', new_name) or new_name.endswith(('.', ' '))
-                or PureWindowsPath(new_name).is_reserved() or (parent / '.family-drive-id').is_file()):
+                or reserved_name(new_name) or (parent / '.family-drive-id').is_file()):
             raise ValueError('Choose a valid name outside an existing SpareDrive folder.')
         target = parent / new_name
         if target.exists():

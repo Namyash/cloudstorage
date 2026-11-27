@@ -1,0 +1,299 @@
+// ============================================================================
+// SpareDrive - verify every push, and release every verified push to main
+// ============================================================================
+//
+// Repository  : https://github.com/Namyash/cloudstorage
+// Jenkins job : ONE Multibranch Pipeline with a GitHub branch source
+//               credentials: github-cloudstorage-credentials
+//               Behaviours: Discover branches, Discover pull requests from origin.
+//               Filter by name (with wildcards), Include: "main PR-*". Do NOT discover tags.
+// Script Path : ci/Jenkinsfile
+// Webhook     : https://<your-jenkins>/github-webhook/   (events: Pushes, Pull requests)
+//
+// This is the automatic version of build_test_release.py -> release.py: build the wheel from
+// the latest code, check it the same way, then publish it. Only the publishing differs: the
+// result goes to the repository's Releases page instead of a local test folder.
+//
+//   WHAT RUNS
+//     pull request        -> verification only. Nothing is built for release or published.
+//     push / merge to main -> verification, then a new release: wheel, checksum and notes
+//                             on https://github.com/Namyash/cloudstorage/releases
+//     any other branch    -> not built (the branch filter leaves it out)
+//
+//   VERIFICATION (a failure here stops the build before anything is released)
+//     Static checks   ruff (unused imports, undefined names, unused variables), a Python compile of
+//                     every .py file, a syntax check of every frontend script, and ci/release_tools.py
+//                     check-repo (pyproject.toml, requirements.txt, README.md and the entry points agree)
+//     Unit tests      the whole tests/ suite on Python 3.10, 3.12 and 3.13, in parallel. 3.10 is the
+//                     lowest version pyproject.toml allows; the newest ones catch removed features.
+//     Wheel checks    (release builds) built with `python -m build --wheel`, then verify-wheel (every
+//                     packaged file, version, dependencies and commands are inside), installed into a
+//                     clean environment, `pip check`, and a smoke test of the INSTALLED package that
+//                     runs its commands and requests every page and script it serves.
+//
+//   VERSIONS - automatic, one per push to main
+//     next release = one patch above the newest tag vX.Y.Z on GitHub. With no tag yet, the version
+//     in pyproject.toml is the first release. To start a new minor or major line, raise the version
+//     in pyproject.toml: it is used when it is higher than the newest tag. The version is written
+//     into the BUILD copy only; nothing is committed to main, so a release can never trigger itself.
+//     A commit that already carries a release tag is verified but not released again.
+//
+//   HOW IT PUBLISHES (ci/release_tools.py publish)
+//     A draft release is created, the wheel and SHA256SUMS.txt are attached, and only then is it
+//     published. Publishing creates the tag vX.Y.Z on the exact commit that was tested. If an upload
+//     fails the draft is deleted, so the Releases page never shows a release without its files.
+//     An existing tag is never replaced. Builds of the job run one at a time.
+//
+//   AGENT NEEDS    git, curl, uv (it downloads the Python versions it is asked for), internet access
+//                  to GitHub and PyPI. node is optional: without it the JavaScript check is skipped
+//                  with a warning.
+// ============================================================================
+
+
+// Runs ci/release_tools.py with the build's Python and returns what it printed.
+def releaseTools(String arguments) {
+    return sh(returnStdout: true, script: "uv run --no-project --python '${env.PYTHON_VERSION}' python ci/release_tools.py ${arguments}").trim()
+}
+
+// The unit tests on one Python version, in their own throwaway environment.
+def runTests(String pythonVersion) {
+    withEnv(["TEST_PYTHON=${pythonVersion}"]) {
+        sh '''
+            set -e
+            VENV=".venv-test-$TEST_PYTHON"
+            uv venv --python "$TEST_PYTHON" "$VENV"
+            uv pip install --python "$VENV/bin/python" -r requirements.txt
+            "$VENV/bin/python" --version
+            "$VENV/bin/python" -B -m unittest discover -s tests -v
+        '''
+    }
+}
+
+pipeline {
+    agent any
+
+    options {
+        skipDefaultCheckout(true)
+        // A newer commit on a pull request makes the older check pointless. Pushes to main queue:
+        // a running release must never be cut short.
+        disableConcurrentBuilds(abortPrevious: env.CHANGE_ID != null)
+        disableResume()
+        buildDiscarder(logRotator(numToKeepStr: '30', artifactNumToKeepStr: '10'))
+        timestamps()
+        timeout(time: 45, unit: 'MINUTES')
+        ansiColor('xterm')
+    }
+
+    parameters {
+        booleanParam(
+            name: 'PUBLISH',
+            defaultValue: true,
+            description: 'A build of main publishes a release when every check passes. Untick (Build with Parameters) to verify and build the wheel without publishing. Pull requests never publish.'
+        )
+    }
+
+    environment {
+        PRODUCT_NAME = 'SpareDrive'
+        GITHUB_REPO = 'Namyash/cloudstorage'
+        GITHUB_CREDENTIALS_ID = 'github-cloudstorage-credentials'
+        MAIN_BRANCH = 'main'
+        // Builds the wheel and runs the helper script (tomllib needs 3.11 or newer).
+        PYTHON_VERSION = '3.12'
+        // The tests run on these as well. The lowest is the oldest version pyproject.toml supports.
+        TEST_PYTHONS = '3.10 3.12 3.13'
+        // Pinned, so a new ruff release cannot fail a build nobody changed.
+        RUFF_VERSION = '0.16.1'
+        RUFF_SELECT = 'F401,F821,F841'
+        UV_LINK_MODE = 'copy'   // agent cache and workspace can be on different filesystems
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                script {
+                    deleteDir()
+                    checkout(scm)
+                    env.COMMIT_SHA = sh(returnStdout: true, script: 'git rev-parse HEAD').trim()
+                    env.SHORT_SHA = env.COMMIT_SHA.substring(0, 7)
+                    // Only a push to main is ever released: never a pull request, a tag or another branch.
+                    env.IS_RELEASE_BUILD = (!env.CHANGE_ID && !env.TAG_NAME && env.BRANCH_NAME == env.MAIN_BRANCH) ? 'true' : 'false'
+                    currentBuild.displayName = env.CHANGE_ID ? "#${env.BUILD_NUMBER} PR #${env.CHANGE_ID}" : "#${env.BUILD_NUMBER} ${env.BRANCH_NAME} ${env.SHORT_SHA}"
+                    echo "${env.BRANCH_NAME} at ${env.COMMIT_SHA}: ${sh(returnStdout: true, script: 'git log -1 --pretty=%s').trim()}"
+                    echo(env.IS_RELEASE_BUILD == 'true' ? 'Release build: a passing run publishes a new release.' : 'Verification only: nothing is published.')
+                }
+            }
+        }
+
+        // Cheap checks first, so a typo fails in seconds instead of after the test runs.
+        stage('Static Checks') {
+            steps {
+                sh '''
+                    set -e
+                    uv --version
+                    printf '\\033[1;35m=== Ruff ===\\033[0m\\n'
+                    uv run --no-project --python "$PYTHON_VERSION" --with "ruff==$RUFF_VERSION" ruff check . --select "$RUFF_SELECT"
+
+                    printf '\\033[1;35m=== Python compile ===\\033[0m\\n'
+                    git ls-files -z -- '*.py' | xargs -0 -r uv run --no-project --python "$PYTHON_VERSION" python -B -m py_compile
+
+                    printf '\\033[1;35m=== Frontend JavaScript syntax ===\\033[0m\\n'
+                    if command -v node > /dev/null 2>&1; then
+                        SCRIPTS="$(mktemp -d)"
+                        trap 'rm -rf "$SCRIPTS"' EXIT
+                        # The scripts are ES modules: node checks them under the .mjs extension.
+                        for script in frontend/*.js; do
+                            copy="$SCRIPTS/$(basename "$script" .js).mjs"
+                            cp "$script" "$copy"
+                            node --check "$copy"
+                            echo "[OK] $script"
+                        done
+                    else
+                        echo "WARNING: node is not installed on this agent, so the frontend JavaScript syntax was not checked."
+                    fi
+
+                    printf '\\033[1;35m=== Repository checks ===\\033[0m\\n'
+                    uv run --no-project --python "$PYTHON_VERSION" python ci/release_tools.py check-repo
+                '''
+            }
+        }
+
+        // The same suite on every supported Python, side by side. Each has its own environment.
+        stage('Unit Tests') {
+            parallel {
+                stage('Python 3.10') {
+                    steps { script { runTests('3.10') } }
+                }
+                stage('Python 3.12') {
+                    steps { script { runTests('3.12') } }
+                }
+                stage('Python 3.13') {
+                    steps { script { runTests('3.13') } }
+                }
+            }
+        }
+
+        // Fetches the release tags (a branch checkout does not bring them) and works out the version.
+        // This runs after the checks so a broken commit never reserves a number.
+        stage('Plan Release') {
+            when { expression { env.IS_RELEASE_BUILD == 'true' } }
+            steps {
+                // The token reaches git through GIT_ASKPASS, never through the URL or the command line.
+                withCredentials([usernamePassword(credentialsId: env.GITHUB_CREDENTIALS_ID, usernameVariable: 'GH_USER', passwordVariable: 'GH_TOKEN')]) {
+                    sh '''
+                        set +x
+                        set -e
+                        ASKPASS="$(mktemp)"
+                        chmod 700 "$ASKPASS"
+                        trap 'rm -f "$ASKPASS"' EXIT
+                        printf '#!/bin/sh\\ncase "$1" in Username*) echo "$GH_USER" ;; *) echo "$GH_TOKEN" ;; esac\\n' > "$ASKPASS"
+                        export GIT_ASKPASS="$ASKPASS" GIT_TERMINAL_PROMPT=0
+                        git fetch --force --tags origin
+                    '''
+                }
+                script {
+                    def alreadyReleased = releaseTools('released-tag')
+                    if (alreadyReleased) {
+                        env.RELEASE_VERSION = ''
+                        echo "${env.SHORT_SHA} already has the release tag ${alreadyReleased}: verified, not released again."
+                    } else if (params.PUBLISH == false) {
+                        env.RELEASE_VERSION = ''
+                        echo 'PUBLISH is unticked: verified, not released.'
+                    } else {
+                        env.RELEASE_VERSION = releaseTools('next-version')
+                        env.RELEASE_TAG = "v${env.RELEASE_VERSION}".toString()
+                        currentBuild.description = "Release ${env.RELEASE_TAG}"
+                        echo "=== Ready to release ===\n  Version: ${env.RELEASE_VERSION}\n  Tag:     ${env.RELEASE_TAG}\n  Commit:  ${env.COMMIT_SHA}"
+                    }
+                }
+            }
+        }
+
+        // The recipe of release.py: write the version into the build copy, then build the wheel.
+        stage('Build Wheel') {
+            when { expression { env.IS_RELEASE_BUILD == 'true' && env.RELEASE_VERSION } }
+            steps {
+                sh '''
+                    set -e
+                    rm -rf dist build .venv-build
+                    uv run --no-project --python "$PYTHON_VERSION" python ci/release_tools.py set-version "$RELEASE_VERSION"
+                    uv venv --seed --python "$PYTHON_VERSION" .venv-build
+                    .venv-build/bin/python -m pip install build
+                    .venv-build/bin/python -m build --wheel --outdir dist
+                    ls -l dist
+                    test "$(ls -1 dist/*.whl | wc -l)" -eq 1 || { echo "ERROR: the build must produce exactly one wheel" >&2; exit 1; }
+                '''
+            }
+        }
+
+        // What release.py does after the build, plus a check of the wheel's own contents.
+        stage('Verify Wheel') {
+            when { expression { env.IS_RELEASE_BUILD == 'true' && env.RELEASE_VERSION } }
+            steps {
+                sh '''
+                    set -e
+                    TOOLS="uv run --no-project --python $PYTHON_VERSION python ci/release_tools.py"
+                    WHEEL="dist/$($TOOLS wheel-name "$RELEASE_VERSION")"
+                    test -f "$WHEEL" || { echo "ERROR: $WHEEL was not built" >&2; exit 1; }
+
+                    $TOOLS verify-wheel "$WHEEL" "$RELEASE_VERSION"
+
+                    # A clean environment holding only the wheel and its dependencies.
+                    rm -rf .venv-wheel
+                    uv venv --seed --python "$PYTHON_VERSION" .venv-wheel
+                    .venv-wheel/bin/python -m pip install "$WHEEL"
+                    .venv-wheel/bin/python -m pip check
+                    .venv-wheel/bin/python ci/release_tools.py smoke "$RELEASE_VERSION"
+
+                    $TOOLS notes "$RELEASE_VERSION" "$WHEEL" dist --commit "$COMMIT_SHA" --product "$PRODUCT_NAME" --build-url "$BUILD_URL"
+                    sha256sum "$WHEEL"
+                '''
+                archiveArtifacts artifacts: 'dist/*.whl, dist/SHA256SUMS.txt, dist/release-notes.md', fingerprint: true
+            }
+        }
+
+        // Last, and only when everything above passed.
+        stage('Publish Release') {
+            when { expression { env.IS_RELEASE_BUILD == 'true' && env.RELEASE_VERSION } }
+            steps {
+                withCredentials([usernamePassword(credentialsId: env.GITHUB_CREDENTIALS_ID, usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
+                    sh '''
+                        set +x
+                        set -e
+                        TOOLS="uv run --no-project --python $PYTHON_VERSION python ci/release_tools.py"
+                        WHEEL="dist/$($TOOLS wheel-name "$RELEASE_VERSION")"
+                        $TOOLS publish --repo "$GITHUB_REPO" --tag "$RELEASE_TAG" --sha "$COMMIT_SHA" \\
+                            --title "$PRODUCT_NAME $RELEASE_TAG for Windows" --notes-file dist/release-notes.md \\
+                            "$WHEEL" dist/SHA256SUMS.txt
+                    '''
+                }
+            }
+        }
+    }
+
+    post {
+        success {
+            script {
+                if (env.RELEASE_VERSION) {
+                    echo "Released ${env.RELEASE_TAG}: https://github.com/${env.GITHUB_REPO}/releases/tag/${env.RELEASE_TAG}"
+                } else {
+                    echo 'Every check passed. Nothing was released by this build.'
+                }
+            }
+        }
+        failure {
+            echo 'The build failed. Nothing was released: a release is published only after every check passes. See the first red stage above.'
+        }
+        // Delete the clone and everything built in it, plus the @tmp folder Jenkins keeps
+        // beside the workspace for its step scripts.
+        cleanup {
+            script {
+                def workspace = env.WORKSPACE
+                deleteDir()
+                dir("${workspace}@tmp") {
+                    deleteDir()
+                }
+            }
+        }
+    }
+}

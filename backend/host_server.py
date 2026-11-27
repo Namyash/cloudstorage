@@ -18,18 +18,20 @@ from werkzeug.exceptions import HTTPException
 
 if __package__:
     from .storage_migration import move_household
-    from .account_and_file_api import CHUNK, MIN_FREE, OVERHEAD, STORAGE_ASSETS, WEB, create_app
+    from .account_and_file_api import MIN_FREE, STORAGE_ASSETS, WEB, create_app, server_options
     from .drive_discovery import (
-        drive_inventory, folder_choice, folder_contents, household_matches, physical_disks, relocated_storage_folder,
-        storage_folder,
+        drive_inventory, find_households, folder_choice, folder_contents, household_matches, physical_disks,
+        relocated_storage_folder, storage_folder,
     )
+    from .remote_setup import read_json
 else:
     from storage_migration import move_household
-    from account_and_file_api import CHUNK, MIN_FREE, OVERHEAD, STORAGE_ASSETS, WEB, create_app
+    from account_and_file_api import MIN_FREE, STORAGE_ASSETS, WEB, create_app, server_options
     from drive_discovery import (
-        drive_inventory, folder_choice, folder_contents, household_matches, physical_disks, relocated_storage_folder,
-        storage_folder,
+        drive_inventory, find_households, folder_choice, folder_contents, household_matches, physical_disks,
+        relocated_storage_folder, storage_folder,
     )
+    from remote_setup import read_json
 
 
 HOST_COOKIE = 'family_drive_host'
@@ -40,7 +42,7 @@ MOVING = {'waiting', 'copying', 'verifying'}
 
 def create_host(config, default_port=8765, set_temp=None):
     config = Path(config)
-    settings = json.loads(config.read_text(encoding='utf-8')) if config.exists() else {}
+    settings = read_json(config) if config.exists() else {}
     port = int(settings.get('port', default_port))
     origin = f'http://127.0.0.1:{port}'
     setup_code = secrets.token_hex(12)
@@ -79,30 +81,52 @@ def create_host(config, default_port=8765, set_temp=None):
                 return None
             saved = Path(settings['data'])
             path = saved
-            storage_id = settings.get('storageId')
+            storage_id = identity = settings.get('storageId')
             allow_system = settings.get('allowSystemDrive') is True
             if not household_matches(saved, storage_id):
                 mounted = None
-                mount_error = 'The saved household folder or database could not be opened. Reconnect your drive or use Storage explorer to choose a new household.'
+                # Keep the reason from the latest search while the next one waits.
+                mount_error = mount_error or 'The saved household folder or database could not be opened. Reconnect your drive or use Storage explorer to choose a new household.'
                 stamp = monotonic()
                 if stamp < next_relocation_check:
                     return None
                 next_relocation_check = stamp + 3
                 path = relocated_storage_folder(saved, storage_id, allow_system)
                 if path is None:
-                    return None
+                    # The saved household is not where it was. Reconnect to the household on any connected drive.
+                    found = find_households(drive_inventory(), allow_system)
+                    choices = [item for item in found if item[1] == storage_id] or found
+                    if len(choices) > 1:
+                        mount_error = 'More than one SpareDrive household is connected. Use Storage explorer to choose the one to open.'
+                    elif not choices:
+                        mount_error = 'No SpareDrive household was found on the connected drives. Reconnect your drive or use Storage explorer to set up a new household.'
+                    if len(choices) != 1:
+                        return None
+                    path, identity = choices[0]
             if mounted is None:
                 try:
                     folder = storage_folder(path, allow_system)
-                    updated = dict(settings, data=str(folder))
+                    updated = dict(settings, data=str(folder), storageId=identity)
                     app = open_drive(folder, updated)
                     set_drive_temp(folder)
-                    if folder != saved:
+                    if folder != saved or identity != storage_id:
                         save_settings(updated)
                     settings, mounted, mount_error = updated, app, ''
-                except (ValueError, OSError, sqlite3.Error):
-                    mount_error = 'The storage folder is unavailable. Check the drive and folder permissions.'
+                except (UnicodeError, OSError, sqlite3.Error):
+                    report_mount_error('The storage folder is unavailable. Check the drive and folder permissions.',
+                                       unexpected=True)
+                except ValueError as error:
+                    report_mount_error(str(error))  # These messages tell the host owner what to fix.
             return mounted
+
+    def report_mount_error(message, unexpected=False):
+        nonlocal mount_error
+        if message != mount_error:  # Every request retries the mount, so log each new failure once.
+            if unexpected:
+                portal.logger.exception('Could not open the storage folder')
+            else:
+                portal.logger.warning('Could not open the storage folder: %s', message)
+        mount_error = message
 
     def moving():
         return move is not None and move['phase'] in MOVING
@@ -317,15 +341,18 @@ def main():
     parser.add_argument('config', type=Path, nargs='?', default=local, help='Host settings file')
     parser.add_argument('--port', type=int, default=8765, help='Local port for a new host setup')
     args = parser.parse_args()
-    service, port, code = create_host(args.config, args.port, set_temp=lambda path: setattr(tempfile, 'tempdir', path))
+    try:
+        service, port, code = create_host(args.config, args.port, set_temp=lambda path: setattr(tempfile, 'tempdir', path))
+    except (OSError, ValueError) as error:
+        parser.exit(1, f'SpareDrive could not read its settings file {args.config}. {error}\n'
+                       'Fix or remove that file, then start SpareDrive again.\n')
     try:
         listener = bind_local_listener(port)
     except OSError:
         parser.exit(1, f'SpareDrive could not use 127.0.0.1:{port}. '
                        'Close the server already using this port and try again.\n')
     with listener:
-        server = create_server(service, sockets=[listener], threads=6,
-                               max_request_body_size=CHUNK + OVERHEAD, inbuf_overflow=CHUNK + OVERHEAD + 1)
+        server = create_server(service, sockets=[listener], **server_options())
         print(f'SpareDrive is available at http://127.0.0.1:{server.effective_port}/', flush=True)
         print(f'Local storage and admin setup code: {code}', flush=True)
         server.run()
