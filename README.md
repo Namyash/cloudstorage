@@ -4,7 +4,7 @@ SpareDrive is a browser-based file server for a drive connected to your home com
 
 ## Install the Windows package
 
-**Easy install.** Download these files from the release into one folder: the wheel, `SHA256SUMS.txt`, `install_sparedrive.py` and `Install-SpareDrive.cmd`. Double-click `Install-SpareDrive.cmd`, or run `py -3 install_sparedrive.py`. It checks the download against `SHA256SUMS.txt`, creates a private virtual environment, installs SpareDrive with its dependencies, checks the result, and creates `Start-SpareDrive.cmd` and `Configure-Internet-Access.cmd`. It installs in `%LOCALAPPDATA%\SpareDrive` unless you pass `--folder`, and offers to start SpareDrive when it finishes. Run it again with a newer wheel to upgrade. It never touches your data or settings.
+**Easy install.** Download one file from the release page: `Install-SpareDrive.cmd`. Double-click it. It downloads the matching wheel from GitHub, checks it against the SHA-256 checksum built into the installer, creates a private virtual environment, installs SpareDrive with its dependencies, checks the result, and creates `Start-SpareDrive.cmd` and `Configure-Internet-Access.cmd`. It installs in `%LOCALAPPDATA%\SpareDrive` unless you pass `--folder`, and offers to start SpareDrive when it finishes. Run the installer from a newer release to upgrade. It never touches your data or settings. To install without internet access, pass a wheel you already have with `--wheel FILE`.
 
 **Manual install.** With Python 3.10 or newer, install the wheel supplied with the release. Then run SpareDrive and open `http://127.0.0.1:8765/`.
 
@@ -95,7 +95,7 @@ backend/    Python service
   storage_migration.py     Copies and verifies data during a drive move
 tests/      Account, storage, and file management regression tests
 ci/         Jenkinsfile and release_tools.py for automated releases
-installer/  install_sparedrive.py and Install-SpareDrive.cmd, published with each release
+installer/  install_sparedrive.py, the source of the Install-SpareDrive.cmd that each release publishes
 start.py    Source launcher used by npm run dev
 ```
 
@@ -113,8 +113,8 @@ Run the regression checks with `python -m unittest discover -s tests` from the p
 1. Static checks: ruff, a compile of every Python file, a syntax check of the frontend scripts, and a consistency check of `pyproject.toml`, `requirements.txt` and this README.
 2. The unit tests on Python 3.10, 3.12 and 3.13.
 3. The wheel is built, checked for every packaged file, version, dependency and command, installed into a clean environment, and smoke-tested.
-4. The installer from `installer/` is run on the new wheel, as a person would run it.
-5. The wheel, `SHA256SUMS.txt` and the installer files are published as a GitHub release `vX.Y.Z`, and the tag is created on the tested commit.
+4. The one-file installer is built from `installer/`, with the release version and the wheel's checksum inside, and run on the new wheel as a person would run it.
+5. The wheel, `SHA256SUMS.txt` and `Install-SpareDrive.cmd` are published as a GitHub release `vX.Y.Z`, and the tag is created on the tested commit.
 
 Each release takes the next patch number above the newest `vX.Y.Z` tag. The first release uses the version in `pyproject.toml`. To start a new minor or major version, raise the version in `pyproject.toml`. The Jenkins job needs a token credential named `github-cloudstorage-credentials` with write access to the repository's contents. The header of `ci/Jenkinsfile` lists the job settings and what the build agent needs.
 

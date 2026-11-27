@@ -1,12 +1,15 @@
-"""Install SpareDrive from a release wheel into its own virtual environment.
+"""Install SpareDrive from its release wheel into its own virtual environment.
 
-Put this file next to the downloaded wheel and SHA256SUMS.txt, then run it (on Windows, double-click
-Install-SpareDrive.cmd). It creates a private environment, checks the wheel against SHA256SUMS.txt,
-installs the wheel with its dependencies, checks the result, and writes Start-SpareDrive.cmd and
-Configure-Internet-Access.cmd. Household data and settings are never touched, so running it again
-upgrades the program.
+This is the source of Install-SpareDrive.cmd, the single file a release publishes. The release build
+writes its version, repository and the wheel's SHA-256 into the four RELEASE_ / WHEEL_ values below, so
+the installer downloads exactly the wheel it was built with and refuses a different or damaged file.
 
-    python install_sparedrive.py [--wheel FILE] [--folder DIR] [--start | --no-start]
+Double-click Install-SpareDrive.cmd. It downloads the wheel, checks its checksum, creates a private
+environment, installs the wheel with its dependencies, checks the result, and writes
+Start-SpareDrive.cmd and Configure-Internet-Access.cmd. Household data and settings are never touched,
+so running a newer installer upgrades the program.
+
+    Install-SpareDrive.cmd [--folder DIR] [--start | --no-start] [--wheel FILE] [--base-url URL]
 
 Uses only the Python standard library.
 """
@@ -19,11 +22,20 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
+import urllib.error
+import urllib.request
 import venv
 from pathlib import Path
 
+# Filled in by the release build (ci/release_tools.py build-installer). Empty in the source tree.
+RELEASE_REPOSITORY = ''
+RELEASE_VERSION = ''
+WHEEL_FILE = ''
+WHEEL_SHA256 = ''
+
 MINIMUM_PYTHON = (3, 10)
-CHECKSUM_FILE = 'SHA256SUMS.txt'
+MAX_DOWNLOAD = 200 * 1024 * 1024  # A wheel is a few hundred KB; refuse anything absurd.
 WHEEL_NAME = re.compile(r'(?P<name>[A-Za-z0-9_.]+)-(?P<version>[0-9][A-Za-z0-9_.+!]*)-[^-]+-[^-]+-[^-]+\.whl')
 # The commands the wheel installs (see [project.scripts] in pyproject.toml).
 SERVER_COMMAND = 'sparedrive'
@@ -41,34 +53,38 @@ def default_folder() -> Path:
     return Path.home() / '.local' / 'share' / 'sparedrive'
 
 
-def find_wheel(here: Path, given: Path | None) -> Path:
-    if given is not None:
-        if not given.is_file():
-            fail(f'The wheel {given} does not exist.')
-        return given.resolve()
-    found = sorted(here.glob('*.whl'))
-    if len(found) != 1:
-        fail('Put exactly one SpareDrive .whl file next to this script, or name it with --wheel. '
-             f'Found {len(found)} in {here}.')
-    return found[0].resolve()
+def release_url() -> str:
+    return f'https://github.com/{RELEASE_REPOSITORY}/releases/download/v{RELEASE_VERSION}'
+
+
+def download_wheel(base_url: str, folder: Path) -> Path:
+    url = f'{base_url.rstrip("/")}/{WHEEL_FILE}'
+    target = folder / WHEEL_FILE
+    print(f'Downloading {url} ...', flush=True)
+    try:
+        with urllib.request.urlopen(url, timeout=60) as response, target.open('wb') as stream:
+            received = 0
+            while chunk := response.read(64 * 1024):
+                received += len(chunk)
+                if received > MAX_DOWNLOAD:
+                    fail('The download is far larger than a SpareDrive wheel, so it was stopped.')
+                stream.write(chunk)
+    except urllib.error.HTTPError as error:
+        fail(f'GitHub answered {error.code} for {url}. Check that the release exists and your connection works.')
+    except (urllib.error.URLError, OSError) as error:
+        fail(f'Could not download {url}: {getattr(error, "reason", error)}')
+    return target
 
 
 def check_checksum(wheel: Path) -> None:
-    """Refuse a wheel that differs from the SHA256SUMS.txt beside it. Without that file, say so."""
-    sums = wheel.parent / CHECKSUM_FILE
-    if not sums.is_file():
-        print(f'Note: {CHECKSUM_FILE} is not next to the wheel, so its checksum was not verified.')
+    """Refuse a wheel that differs from the one this installer was built with."""
+    if not WHEEL_SHA256 or wheel.name != WHEEL_FILE:
+        print('Note: this is not the wheel this installer was built with, so its checksum was not verified.')
         return
-    for line in sums.read_text(encoding='utf-8').splitlines():
-        digest, _, name = line.strip().partition(' ')
-        if name.strip().lstrip('*') == wheel.name:  # sha256sum marks binary files with a leading "*"
-            actual = hashlib.sha256(wheel.read_bytes()).hexdigest()
-            if actual != digest.lower():
-                fail(f'{wheel.name} does not match {CHECKSUM_FILE}. The download is incomplete or has been changed; '
-                     'download it again.')
-            print(f'Checksum verified: {wheel.name}')
-            return
-    fail(f'{CHECKSUM_FILE} has no entry for {wheel.name}.')
+    if hashlib.sha256(wheel.read_bytes()).hexdigest() != WHEEL_SHA256:
+        fail(f'{wheel.name} does not match the checksum this installer was built with. The download is '
+             'incomplete or has been changed; run the installer again, or download it again from the release page.')
+    print(f'Checksum verified: {wheel.name}')
 
 
 def run(*command: object, capture: bool = False) -> str:
@@ -129,26 +145,34 @@ def install(wheel: Path, folder: Path) -> Path:
 
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    parser.add_argument('--wheel', type=Path, help='The wheel to install. Default: the one next to this script.')
     parser.add_argument('--folder', type=Path, default=default_folder(), help='Where to install. Default: %(default)s')
+    parser.add_argument('--wheel', type=Path, help='Install this local wheel instead of downloading one.')
+    parser.add_argument('--base-url', help='Download the wheel from this address instead of the GitHub release.')
     start = parser.add_mutually_exclusive_group()
     start.add_argument('--start', action='store_true', help='Start SpareDrive when the install finishes.')
     start.add_argument('--no-start', action='store_true', help='Do not ask to start SpareDrive.')
     args = parser.parse_args()
+    folder = args.folder.expanduser().resolve()
 
     try:
         if sys.version_info < MINIMUM_PYTHON:
             fail(f'Python {MINIMUM_PYTHON[0]}.{MINIMUM_PYTHON[1]} or newer is required; this is {sys.version.split()[0]}.')
-        wheel = find_wheel(Path(__file__).resolve().parent, args.wheel)
-        check_checksum(wheel)
-        server = install(wheel, args.folder.expanduser().resolve())
-        launchers = write_launchers(args.folder.expanduser().resolve())
+        if args.wheel is None and not (RELEASE_REPOSITORY and RELEASE_VERSION and WHEEL_FILE):
+            fail('This copy of the installer is not tied to a release. Download Install-SpareDrive.cmd from the '
+                 'Releases page, or name a wheel with --wheel FILE.')
+        if args.wheel is not None and not args.wheel.is_file():
+            fail(f'The wheel {args.wheel} does not exist.')
+        with tempfile.TemporaryDirectory(prefix='sparedrive-install-') as scratch:
+            wheel = args.wheel.resolve() if args.wheel else download_wheel(args.base_url or release_url(), Path(scratch))
+            check_checksum(wheel)
+            server = install(wheel, folder)
+        launchers = write_launchers(folder)
     except subprocess.CalledProcessError as error:
         fail(f'A step failed ({error.cmd[-1] if error.cmd else "command"}, exit code {error.returncode}). Read the messages above.')
     except OSError as error:
         fail(str(error))
 
-    print(f'\nSpareDrive is installed in {args.folder.expanduser().resolve()}')
+    print(f'\nSpareDrive is installed in {folder}')
     if launchers:
         print('Start it:                  ' + str(launchers[0]))
         print('Set up internet access:    ' + str(launchers[1]))

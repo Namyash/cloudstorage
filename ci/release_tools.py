@@ -9,6 +9,9 @@ Standard library only, and Python 3.11 or newer (tomllib). Run from the reposito
     python ci/release_tools.py set-version VERSION           write the version into the working copy
     python ci/release_tools.py verify-wheel WHEEL VERSION    the wheel holds everything the source tree packages
     python ci/release_tools.py smoke VERSION                 run in an environment with the wheel installed
+    python ci/release_tools.py build-installer VERSION WHEEL OUT_DIR --repo OWNER/NAME
+                                                             write the one-file Install-SpareDrive.cmd
+    python ci/release_tools.py installer-files               the name of that file
     python ci/release_tools.py notes VERSION WHEEL OUT_DIR   write SHA256SUMS.txt and release-notes.md
     python ci/release_tools.py publish ... ASSET [ASSET ...] create the GitHub release (token in GITHUB_TOKEN)
 
@@ -42,9 +45,25 @@ PINNED = re.compile(r'([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9._+!-]+)')
 REPOSITORY = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
 COMMIT = re.compile(r'[0-9a-f]{40}')
 CHECKSUM_FILE = 'SHA256SUMS.txt'
-# The installer published beside every wheel (first the script, then its Windows launcher).
 INSTALLER_DIR = 'installer'
-INSTALLER_FILES = ('install_sparedrive.py', 'Install-SpareDrive.cmd')
+INSTALLER_SOURCE = 'install_sparedrive.py'  # The readable installer in the repository.
+INSTALLER_ASSET = 'Install-SpareDrive.cmd'  # The one installer file a release publishes, built from the source.
+INSTALLER_VALUES = ('RELEASE_REPOSITORY', 'RELEASE_VERSION', 'WHEEL_FILE', 'WHEEL_SHA256')  # Set per release.
+# cmd.exe runs this part of the .cmd; Python skips the first line of the file (python -x) and never reaches it.
+INSTALLER_BATCH = r'''@echo off
+setlocal
+set "PYTHON=py -3"
+%PYTHON% --version >nul 2>nul || set "PYTHON=python"
+%PYTHON% --version >nul 2>nul || (
+    echo Python 3.10 or newer is required. Install it from https://www.python.org/downloads/ and run this again.
+    pause
+    exit /b 1
+)
+%PYTHON% -x "%~f0" %*
+set "RESULT=%ERRORLEVEL%"
+if "%~1"=="" pause
+exit /b %RESULT%
+'''
 Version = tuple[int, int, int]
 
 
@@ -138,8 +157,17 @@ def check_repo(root: Path) -> list[str]:
         requirements(root)
     except ValueError as error:
         errors.append(str(error))
-    errors.extend(f'{INSTALLER_DIR}/{name} is missing; it is published with every release.'
-                  for name in INSTALLER_FILES if not (root / INSTALLER_DIR / name).is_file())
+    installer = root / INSTALLER_DIR / INSTALLER_SOURCE
+    if not installer.is_file():
+        errors.append(f'{INSTALLER_DIR}/{INSTALLER_SOURCE} is missing; every release is built from it.')
+    else:
+        source = installer.read_text(encoding='utf-8')
+        errors.extend(f"{INSTALLER_DIR}/{INSTALLER_SOURCE} must contain the line {name} = '' exactly once."
+                      for name in INSTALLER_VALUES if len(re.findall(rf"(?m)^{name} = ''$", source)) != 1)
+        if not source.isascii():
+            errors.append(f'{INSTALLER_DIR}/{INSTALLER_SOURCE} must be plain ASCII so cmd.exe can read the .cmd built from it.')
+        if "\nif __name__ == '__main__':" not in source:
+            errors.append(f'{INSTALLER_DIR}/{INSTALLER_SOURCE} must end with an `if __name__ == \'__main__\':` block.')
     setuptools = project['tool']['setuptools']
     for package in setuptools['packages']:
         folder = root / setuptools['package-dir'][package]
@@ -239,6 +267,34 @@ def smoke(root: Path, version: str) -> None:
     print(f'[OK] installed {project["project"]["name"]} {version}: commands run, {len(pages)} pages and assets are served')
 
 
+def build_installer(root: Path, version: str, wheel: Path, out_dir: Path, repository: str) -> Path:
+    """Write the one-file installer: the installer source with this release's values, behind a cmd.exe header.
+
+    The file is both a batch file and a Python program. cmd.exe runs the first line, which jumps to the batch
+    commands at the end; those start Python as `python -x`, which skips that first line, so Python reads the rest.
+    The wheel's SHA-256 is written inside, so the installer needs no separate checksum file.
+    """
+    if not (REPOSITORY.fullmatch(repository) and VERSION.fullmatch(version)):
+        raise ValueError('Give the repository as owner/name and the version as major.minor.patch.')
+    source = (root / INSTALLER_DIR / INSTALLER_SOURCE).read_text(encoding='utf-8').replace('\r\n', '\n')
+    if not source.isascii():
+        raise ValueError(f'{INSTALLER_SOURCE} must be plain ASCII so cmd.exe can read the .cmd built from it.')
+    values = dict(zip(INSTALLER_VALUES, (repository, version, wheel.name, hashlib.sha256(wheel.read_bytes()).hexdigest())))
+    for name, value in values.items():
+        source, count = re.subn(rf"(?m)^{name} = ''$", lambda _, name=name, value=value: f'{name} = {value!r}', source)
+        if count != 1:
+            raise ValueError(f"{INSTALLER_SOURCE} must contain the line {name} = '' exactly once.")
+    body, marker, tail = source.partition("\nif __name__ == '__main__':")
+    if not marker:
+        raise ValueError(f"{INSTALLER_SOURCE} must end with an `if __name__ == '__main__':` block.")
+    text = ('@goto :begin_batch & rem Python skips this line (python -x); cmd.exe jumps to the batch commands below.\n'
+            + body + "\n\n_BATCH = r'''\n:begin_batch\n" + INSTALLER_BATCH + "'''\n" + marker + tail)
+    out_dir.mkdir(parents=True, exist_ok=True)
+    target = out_dir / INSTALLER_ASSET
+    target.write_bytes(text.replace('\n', '\r\n').encode('ascii'))  # cmd.exe needs Windows line endings.
+    return target
+
+
 def write_notes(root: Path, version: str, wheel: Path, out_dir: Path, commit: str, product: str, build_url: str,
                 extras: list[Path]) -> None:
     project = load_project(root)
@@ -249,22 +305,21 @@ def write_notes(root: Path, version: str, wheel: Path, out_dir: Path, commit: st
     requires = project['project'].get('requires-python', '')
     python = f'Python {requires[2:]} or newer' if requires.startswith('>=') else f'Python {requires}'.strip()
     built = f'Built by Jenkins from commit `{commit}` after every check passed.' + (f' [Build log]({build_url})' if build_url else '')
-    script, launcher = INSTALLER_FILES
     (out_dir / 'release-notes.md').write_text(f'''# {product} v{version} for Windows
 
 Requires {python}.
 
 ## Easy install
-1. Download `{wheel.name}`, `{CHECKSUM_FILE}`, `{script}` and `{launcher}` from Assets into one folder.
-2. Double-click `{launcher}`. It checks the download, creates a private environment, installs {product} and offers to start it.
+1. Download `{INSTALLER_ASSET}` from Assets. It is the only file you need.
+2. Double-click it. It downloads this release's wheel from GitHub, checks it against the checksum built into the installer, creates a private environment, installs {product} and offers to start it.
 3. Open [{product}](http://127.0.0.1:8765/), enter the setup code shown in the terminal, select a dedicated folder on your data drive, and create your admin account.
 
-Run `{launcher}` again after a new release to upgrade. Your data and settings are never touched.
+Run the installer of a newer release to upgrade. Your data and settings are never touched.
 
 ## Manual install
-Open PowerShell in the download folder and run `python -m pip install .\\{wheel.name}`, then `python -m family_drive`.
+Download `{wheel.name}`, open PowerShell in the download folder and run `python -m pip install .\\{wheel.name}`, then `python -m family_drive`.
 
-SHA-256 of the wheel: `{digest}`
+`{CHECKSUM_FILE}` lists the SHA-256 of every file here. The wheel's is `{digest}`.
 
 {built}
 ''', encoding='utf-8')
@@ -334,10 +389,12 @@ def main() -> int:
     for name in ('check-repo', 'released-tag', 'next-version', 'installer-files'):
         commands.add_parser(name)
     for name, arguments in (('wheel-name', ['version']), ('set-version', ['version']), ('smoke', ['version']),
-                            ('verify-wheel', ['wheel', 'version']), ('notes', ['version', 'wheel', 'out_dir'])):
+                            ('verify-wheel', ['wheel', 'version']), ('notes', ['version', 'wheel', 'out_dir']),
+                            ('build-installer', ['version', 'wheel', 'out_dir'])):
         command = commands.add_parser(name)
         for argument in arguments:
             command.add_argument(argument, type=Path if argument in ('wheel', 'out_dir') else str)
+    commands.choices['build-installer'].add_argument('--repo', required=True)
     notes = commands.choices['notes']
     notes.add_argument('--commit', default='unknown')
     notes.add_argument('--product', default='Release')
@@ -362,7 +419,9 @@ def main() -> int:
         elif args.command == 'next-version':
             print(next_version(load_project(root)['project']['version'], git('tag', '--list', 'v*').splitlines()))
         elif args.command == 'installer-files':
-            print('\n'.join(INSTALLER_FILES))
+            print(INSTALLER_ASSET)
+        elif args.command == 'build-installer':
+            print(f'[OK] wrote {build_installer(root, args.version, args.wheel, args.out_dir, args.repo)}')
         elif args.command == 'wheel-name':
             print(wheel_name(load_project(root), args.version))
         elif args.command == 'set-version':
