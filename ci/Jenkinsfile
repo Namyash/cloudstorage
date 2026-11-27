@@ -16,7 +16,8 @@
 //
 //   WHAT RUNS
 //     pull request        -> verification only. Nothing is built for release or published.
-//     push / merge to main -> verification, then a new release: wheel, checksum and notes
+//     push / merge to main -> verification, then a new release: wheel, checksums, the installer
+//                             (installer/) and notes
 //                             on https://github.com/Namyash/cloudstorage/releases
 //     any other branch    -> not built (the branch filter leaves it out)
 //
@@ -29,7 +30,8 @@
 //     Wheel checks    (release builds) built with `python -m build --wheel`, then verify-wheel (every
 //                     packaged file, version, dependencies and commands are inside), installed into a
 //                     clean environment, `pip check`, and a smoke test of the INSTALLED package that
-//                     runs its commands and requests every page and script it serves.
+//                     runs its commands and requests every page and script it serves. Finally the
+//                     installer that will be published is run on that wheel, as a person would.
 //
 //   VERSIONS - automatic, one per push to main
 //     next release = one patch above the newest tag vX.Y.Z on GitHub. With no tag yet, the version
@@ -39,7 +41,7 @@
 //     A commit that already carries a release tag is verified but not released again.
 //
 //   HOW IT PUBLISHES (ci/release_tools.py publish)
-//     A draft release is created, the wheel and SHA256SUMS.txt are attached, and only then is it
+//     A draft release is created, the wheel, SHA256SUMS.txt and the installer files are attached, and only then is it
 //     published. Publishing creates the tag vX.Y.Z on the exact commit that was tested. If an upload
 //     fails the draft is deleted, so the Releases page never shows a release without its files.
 //     An existing tag is never replaced. Builds of the job run one at a time.
@@ -245,10 +247,22 @@ pipeline {
                     .venv-wheel/bin/python -m pip check
                     .venv-wheel/bin/python ci/release_tools.py smoke "$RELEASE_VERSION"
 
-                    $TOOLS notes "$RELEASE_VERSION" "$WHEEL" dist --commit "$COMMIT_SHA" --product "$PRODUCT_NAME" --build-url "$BUILD_URL"
+                    # The installer is published beside the wheel and listed in its checksums.
+                    INSTALLER_FILES="$($TOOLS installer-files)"
+                    ALSO=""
+                    for name in $INSTALLER_FILES; do
+                        cp "installer/$name" dist/
+                        ALSO="$ALSO dist/$name"
+                    done
+                    $TOOLS notes "$RELEASE_VERSION" "$WHEEL" dist --commit "$COMMIT_SHA" --product "$PRODUCT_NAME" --build-url "$BUILD_URL" --also $ALSO
                     sha256sum "$WHEEL"
+
+                    # Run the installer that will be published, on the wheel that will be published, exactly as a
+                    # person would: it checks the checksum file, builds its own environment and installs.
+                    rm -rf .install-test
+                    uv run --no-project --python "$PYTHON_VERSION" python "dist/$(echo "$INSTALLER_FILES" | head -n 1)" --folder .install-test --no-start
                 '''
-                archiveArtifacts artifacts: 'dist/*.whl, dist/SHA256SUMS.txt, dist/release-notes.md', fingerprint: true
+                archiveArtifacts artifacts: 'dist/*', fingerprint: true
             }
         }
 
@@ -262,9 +276,10 @@ pipeline {
                         set -e
                         TOOLS="uv run --no-project --python $PYTHON_VERSION python ci/release_tools.py"
                         WHEEL="dist/$($TOOLS wheel-name "$RELEASE_VERSION")"
+                        INSTALLER_ASSETS="$($TOOLS installer-files | sed 's#^#dist/#')"
                         $TOOLS publish --repo "$GITHUB_REPO" --tag "$RELEASE_TAG" --sha "$COMMIT_SHA" \\
                             --title "$PRODUCT_NAME $RELEASE_TAG for Windows" --notes-file dist/release-notes.md \\
-                            "$WHEEL" dist/SHA256SUMS.txt
+                            "$WHEEL" dist/SHA256SUMS.txt $INSTALLER_ASSETS
                     '''
                 }
             }

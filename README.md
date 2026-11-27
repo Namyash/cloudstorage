@@ -4,7 +4,9 @@ SpareDrive is a browser-based file server for a drive connected to your home com
 
 ## Install the Windows package
 
-With Python 3.10 or newer, install the wheel supplied with the release. Then run SpareDrive and open `http://127.0.0.1:8765/`.
+**Easy install.** Download these files from the release into one folder: the wheel, `SHA256SUMS.txt`, `install_sparedrive.py` and `Install-SpareDrive.cmd`. Double-click `Install-SpareDrive.cmd`, or run `py -3 install_sparedrive.py`. It checks the download against `SHA256SUMS.txt`, creates a private virtual environment, installs SpareDrive with its dependencies, checks the result, and creates `Start-SpareDrive.cmd` and `Configure-Internet-Access.cmd`. It installs in `%LOCALAPPDATA%\SpareDrive` unless you pass `--folder`, and offers to start SpareDrive when it finishes. Run it again with a newer wheel to upgrade. It never touches your data or settings.
+
+**Manual install.** With Python 3.10 or newer, install the wheel supplied with the release. Then run SpareDrive and open `http://127.0.0.1:8765/`.
 
 ```powershell
 py -3 -m pip install .\family_drive-0.2.1-py3-none-any.whl
@@ -93,6 +95,7 @@ backend/    Python service
   storage_migration.py     Copies and verifies data during a drive move
 tests/      Account, storage, and file management regression tests
 ci/         Jenkinsfile and release_tools.py for automated releases
+installer/  install_sparedrive.py and Install-SpareDrive.cmd, published with each release
 start.py    Source launcher used by npm run dev
 ```
 
@@ -110,7 +113,8 @@ Run the regression checks with `python -m unittest discover -s tests` from the p
 1. Static checks: ruff, a compile of every Python file, a syntax check of the frontend scripts, and a consistency check of `pyproject.toml`, `requirements.txt` and this README.
 2. The unit tests on Python 3.10, 3.12 and 3.13.
 3. The wheel is built, checked for every packaged file, version, dependency and command, installed into a clean environment, and smoke-tested.
-4. The wheel and `SHA256SUMS.txt` are published as a GitHub release `vX.Y.Z`, and the tag is created on the tested commit.
+4. The installer from `installer/` is run on the new wheel, as a person would run it.
+5. The wheel, `SHA256SUMS.txt` and the installer files are published as a GitHub release `vX.Y.Z`, and the tag is created on the tested commit.
 
 Each release takes the next patch number above the newest `vX.Y.Z` tag. The first release uses the version in `pyproject.toml`. To start a new minor or major version, raise the version in `pyproject.toml`. The Jenkins job needs a token credential named `github-cloudstorage-credentials` with write access to the repository's contents. The header of `ci/Jenkinsfile` lists the job settings and what the build agent needs.
 

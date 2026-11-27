@@ -41,6 +41,10 @@ PROJECT_VERSION = re.compile(rb'(?m)^version = "([^"\r\n]+)"[ \t]*\r?$')
 PINNED = re.compile(r'([A-Za-z0-9][A-Za-z0-9._-]*)==([A-Za-z0-9._+!-]+)')
 REPOSITORY = re.compile(r'[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+')
 COMMIT = re.compile(r'[0-9a-f]{40}')
+CHECKSUM_FILE = 'SHA256SUMS.txt'
+# The installer published beside every wheel (first the script, then its Windows launcher).
+INSTALLER_DIR = 'installer'
+INSTALLER_FILES = ('install_sparedrive.py', 'Install-SpareDrive.cmd')
 Version = tuple[int, int, int]
 
 
@@ -134,6 +138,8 @@ def check_repo(root: Path) -> list[str]:
         requirements(root)
     except ValueError as error:
         errors.append(str(error))
+    errors.extend(f'{INSTALLER_DIR}/{name} is missing; it is published with every release.'
+                  for name in INSTALLER_FILES if not (root / INSTALLER_DIR / name).is_file())
     setuptools = project['tool']['setuptools']
     for package in setuptools['packages']:
         folder = root / setuptools['package-dir'][package]
@@ -233,22 +239,30 @@ def smoke(root: Path, version: str) -> None:
     print(f'[OK] installed {project["project"]["name"]} {version}: commands run, {len(pages)} pages and assets are served')
 
 
-def write_notes(root: Path, version: str, wheel: Path, out_dir: Path, commit: str, product: str, build_url: str) -> None:
+def write_notes(root: Path, version: str, wheel: Path, out_dir: Path, commit: str, product: str, build_url: str,
+                extras: list[Path]) -> None:
     project = load_project(root)
     digest = hashlib.sha256(wheel.read_bytes()).hexdigest()
     out_dir.mkdir(parents=True, exist_ok=True)
-    (out_dir / 'SHA256SUMS.txt').write_text(f'{digest}  {wheel.name}\n', encoding='ascii')
+    checksums = [f'{digest}  {wheel.name}'] + [f'{hashlib.sha256(path.read_bytes()).hexdigest()}  {path.name}' for path in extras]
+    (out_dir / CHECKSUM_FILE).write_text('\n'.join(checksums) + '\n', encoding='ascii')
     requires = project['project'].get('requires-python', '')
     python = f'Python {requires[2:]} or newer' if requires.startswith('>=') else f'Python {requires}'.strip()
     built = f'Built by Jenkins from commit `{commit}` after every check passed.' + (f' [Build log]({build_url})' if build_url else '')
+    script, launcher = INSTALLER_FILES
     (out_dir / 'release-notes.md').write_text(f'''# {product} v{version} for Windows
 
 Requires {python}.
 
-1. Download `{wheel.name}` from Assets.
-2. Open PowerShell in the download folder and run `python -m pip install .\\{wheel.name}`.
-3. Run `python -m family_drive` and open [{product}](http://127.0.0.1:8765/).
-4. Enter the setup code from the terminal, select a dedicated folder on your data drive, and create your admin account.
+## Easy install
+1. Download `{wheel.name}`, `{CHECKSUM_FILE}`, `{script}` and `{launcher}` from Assets into one folder.
+2. Double-click `{launcher}`. It checks the download, creates a private environment, installs {product} and offers to start it.
+3. Open [{product}](http://127.0.0.1:8765/), enter the setup code shown in the terminal, select a dedicated folder on your data drive, and create your admin account.
+
+Run `{launcher}` again after a new release to upgrade. Your data and settings are never touched.
+
+## Manual install
+Open PowerShell in the download folder and run `python -m pip install .\\{wheel.name}`, then `python -m family_drive`.
 
 SHA-256 of the wheel: `{digest}`
 
@@ -317,7 +331,7 @@ def publish(repository: str, tag: str, commit: str, title: str, notes: Path, ass
 def main() -> int:
     parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     commands = parser.add_subparsers(dest='command', required=True)
-    for name in ('check-repo', 'released-tag', 'next-version'):
+    for name in ('check-repo', 'released-tag', 'next-version', 'installer-files'):
         commands.add_parser(name)
     for name, arguments in (('wheel-name', ['version']), ('set-version', ['version']), ('smoke', ['version']),
                             ('verify-wheel', ['wheel', 'version']), ('notes', ['version', 'wheel', 'out_dir'])):
@@ -328,6 +342,7 @@ def main() -> int:
     notes.add_argument('--commit', default='unknown')
     notes.add_argument('--product', default='Release')
     notes.add_argument('--build-url', default='')
+    notes.add_argument('--also', nargs='*', type=Path, default=[], help='More files to list in the checksum file.')
     upload = commands.add_parser('publish')
     for name in ('repo', 'tag', 'sha', 'title'):
         upload.add_argument(f'--{name}', required=True)
@@ -346,6 +361,8 @@ def main() -> int:
             print(next((tag for tag in tags if TAG.fullmatch(tag)), ''))
         elif args.command == 'next-version':
             print(next_version(load_project(root)['project']['version'], git('tag', '--list', 'v*').splitlines()))
+        elif args.command == 'installer-files':
+            print('\n'.join(INSTALLER_FILES))
         elif args.command == 'wheel-name':
             print(wheel_name(load_project(root), args.version))
         elif args.command == 'set-version':
@@ -357,7 +374,7 @@ def main() -> int:
         elif args.command == 'smoke':
             smoke(root, args.version)
         elif args.command == 'notes':
-            write_notes(root, args.version, args.wheel, args.out_dir, args.commit, args.product, args.build_url)
+            write_notes(root, args.version, args.wheel, args.out_dir, args.commit, args.product, args.build_url, args.also)
         else:
             if not (REPOSITORY.fullmatch(args.repo) and TAG.fullmatch(args.tag) and COMMIT.fullmatch(args.sha)):
                 fail('Give --repo as owner/name, --tag as vMAJOR.MINOR.PATCH and --sha as a full commit hash.')

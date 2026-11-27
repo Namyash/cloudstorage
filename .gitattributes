@@ -1,0 +1,3 @@
+# Windows batch files need Windows line endings wherever they are checked out, including the
+# Linux build agent that publishes Install-SpareDrive.cmd with each release.
+*.cmd text eol=crlf
