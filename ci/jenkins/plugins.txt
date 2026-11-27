@@ -1,0 +1,10 @@
+configuration-as-code
+workflow-aggregator
+pipeline-stage-view
+git
+github
+github-branch-source
+credentials
+credentials-binding
+ansicolor
+timestamper

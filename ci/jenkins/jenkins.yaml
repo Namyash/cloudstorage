@@ -1,0 +1,23 @@
+# Jenkins Configuration as Code: applied every time the container starts.
+# Everything else (the GitHub credential, the job) is created in the Jenkins web page.
+jenkins:
+  systemMessage: "Local Jenkins for the cloudstorage repository"
+  numExecutors: 2
+  securityRealm:
+    local:
+      allowsSignup: false
+      users:
+        - id: "admin"
+          password: "${JENKINS_ADMIN_PASSWORD}"
+  authorizationStrategy:
+    loggedInUsersCanDoAnything:
+      allowAnonymousRead: false
+
+unclassified:
+  location:
+    url: "http://localhost:8081/"
+  gitHubConfiguration:
+    # Pause only when GitHub's request budget is nearly used up. The default spreads requests out
+    # and pauses for minutes at a time, which is very slow while the budget is the 60 per hour
+    # that apply before a GitHub token credential is added (5000 per hour with one).
+    apiRateLimitChecker: ThrottleOnOver

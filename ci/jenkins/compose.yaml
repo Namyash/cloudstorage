@@ -1,0 +1,18 @@
+services:
+  jenkins:
+    build: .
+    image: cloudstorage-jenkins:local
+    container_name: cloudstorage-jenkins
+    restart: unless-stopped
+    ports:
+      # Only this computer can open Jenkins, at http://localhost:8081/. Nothing is exposed to the network.
+      # Port 8081 on the left is the one you open; change it if another program uses it.
+      - "127.0.0.1:8081:8080"
+    environment:
+      JENKINS_ADMIN_PASSWORD: ${JENKINS_ADMIN_PASSWORD:?Copy .env.example to .env and set JENKINS_ADMIN_PASSWORD}
+    volumes:
+      # Jobs, credentials, build history and the uv cache survive restarts and image rebuilds.
+      - jenkins_home:/var/jenkins_home
+
+volumes:
+  jenkins_home:

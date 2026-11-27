@@ -192,18 +192,18 @@ pipeline {
                     '''
                 }
                 script {
+                    env.PUBLISH_RELEASE = 'false'
                     def alreadyReleased = releaseTools('released-tag')
                     if (alreadyReleased) {
                         env.RELEASE_VERSION = ''
                         echo "${env.SHORT_SHA} already has the release tag ${alreadyReleased}: verified, not released again."
-                    } else if (params.PUBLISH == false) {
-                        env.RELEASE_VERSION = ''
-                        echo 'PUBLISH is unticked: verified, not released.'
                     } else {
                         env.RELEASE_VERSION = releaseTools('next-version')
                         env.RELEASE_TAG = "v${env.RELEASE_VERSION}".toString()
-                        currentBuild.description = "Release ${env.RELEASE_TAG}"
-                        echo "=== Ready to release ===\n  Version: ${env.RELEASE_VERSION}\n  Tag:     ${env.RELEASE_TAG}\n  Commit:  ${env.COMMIT_SHA}"
+                        // PUBLISH unticked still builds and checks the wheel; only the last stage is left out.
+                        env.PUBLISH_RELEASE = params.PUBLISH == false ? 'false' : 'true'
+                        currentBuild.description = env.PUBLISH_RELEASE == 'true' ? "Release ${env.RELEASE_TAG}" : "Wheel ${env.RELEASE_VERSION} (not published)"
+                        echo "=== ${env.PUBLISH_RELEASE == 'true' ? 'Ready to release' : 'Ready to build (PUBLISH is unticked: nothing will be published)'} ===\n  Version: ${env.RELEASE_VERSION}\n  Tag:     ${env.RELEASE_TAG}\n  Commit:  ${env.COMMIT_SHA}"
                     }
                 }
             }
@@ -254,7 +254,7 @@ pipeline {
 
         // Last, and only when everything above passed.
         stage('Publish Release') {
-            when { expression { env.IS_RELEASE_BUILD == 'true' && env.RELEASE_VERSION } }
+            when { expression { env.IS_RELEASE_BUILD == 'true' && env.RELEASE_VERSION && env.PUBLISH_RELEASE == 'true' } }
             steps {
                 withCredentials([usernamePassword(credentialsId: env.GITHUB_CREDENTIALS_ID, usernameVariable: 'GITHUB_USER', passwordVariable: 'GITHUB_TOKEN')]) {
                     sh '''
@@ -274,8 +274,10 @@ pipeline {
     post {
         success {
             script {
-                if (env.RELEASE_VERSION) {
+                if (env.RELEASE_VERSION && env.PUBLISH_RELEASE == 'true') {
                     echo "Released ${env.RELEASE_TAG}: https://github.com/${env.GITHUB_REPO}/releases/tag/${env.RELEASE_TAG}"
+                } else if (env.RELEASE_VERSION) {
+                    echo "Every check passed and wheel ${env.RELEASE_VERSION} was built and verified. It was not published (PUBLISH is unticked)."
                 } else {
                     echo 'Every check passed. Nothing was released by this build.'
                 }
