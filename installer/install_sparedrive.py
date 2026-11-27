@@ -12,7 +12,10 @@ start SpareDrive. Household data and settings are never touched, so running a ne
 upgrades the program.
 
     Install-SpareDrive.cmd [--folder DIR] [--start | --no-start] [--internet | --no-internet]
-                           [--wheel FILE] [--base-url URL]
+                           [--stop-running] [--wheel FILE] [--base-url URL]
+
+To upgrade, a SpareDrive running from the install folder has to be stopped first, because Windows does not
+let a running program be replaced. The installer says so and asks; --stop-running stops it without asking.
 
 Uses only the Python standard library.
 """
@@ -26,6 +29,7 @@ import re
 import subprocess
 import sys
 import tempfile
+import time
 import urllib.error
 import urllib.request
 import venv
@@ -153,13 +157,48 @@ def set_up_internet(server: Path) -> int:
         return 1
 
 
-def install(wheel: Path, folder: Path) -> Path:
+def processes_running_from(environment: Path) -> list[int]:
+    """Process IDs of programs started from this environment, other than this installer. Windows only."""
+    if not WINDOWS or not environment.exists():
+        return []
+    path = str(environment).replace("'", "''")  # For a PowerShell single-quoted string.
+    # $PID is this PowerShell itself, whose command line contains the path being searched for.
+    script = (f"$p = '{path}'; Get-CimInstance Win32_Process | Where-Object {{ $_.ProcessId -ne $PID -and $_.ProcessId -ne {os.getpid()} -and "
+              "(($_.ExecutablePath -and $_.ExecutablePath.StartsWith($p, 'OrdinalIgnoreCase')) -or "
+              "($_.CommandLine -and $_.CommandLine.IndexOf($p, [StringComparison]::OrdinalIgnoreCase) -ge 0)) } | "
+              "ForEach-Object { $_.ProcessId }")
+    result = subprocess.run(['powershell', '-NoProfile', '-Command', script], capture_output=True, text=True)
+    return [int(line) for line in result.stdout.split() if line.isdigit()]
+
+
+def free_environment(folder: Path, stop: bool) -> None:
+    """A running SpareDrive holds its program files, and Windows does not let those be replaced. Stop it, if allowed."""
+    environment = folder / '.venv'
+    running = processes_running_from(environment)
+    if not running:
+        return
+    print(f'SpareDrive is running from {environment} (process {", ".join(map(str, running))}). '
+          'It must be stopped before it can be upgraded.')
+    if not (stop or (sys.stdin.isatty() and ask('Stop it now? Anyone using it is disconnected.', default=False))):
+        fail('Close the SpareDrive window (press Ctrl+C in it) and run the installer again, or run it with --stop-running.')
+    for pid in running:
+        subprocess.run(['taskkill', '/PID', str(pid), '/T', '/F'], capture_output=True)
+    for _ in range(20):  # Give Windows up to ten seconds to release the files.
+        if not processes_running_from(environment):
+            print('SpareDrive was stopped.')
+            return
+        time.sleep(0.5)
+    fail('Could not stop SpareDrive. Close it by hand and run the installer again.')
+
+
+def install(wheel: Path, folder: Path, stop_running: bool) -> Path:
     match = WHEEL_NAME.fullmatch(wheel.name)
     if match is None:
         fail(f'{wheel.name} is not a wheel file name such as family_drive-1.2.3-py3-none-any.whl.')
     distribution, version = match['name'].replace('_', '-'), match['version']
     folder.mkdir(parents=True, exist_ok=True)
     python, scripts = environment_paths(folder)
+    free_environment(folder, stop_running)
 
     print(f'Creating the private environment in {folder / ".venv"} ...', flush=True)
     venv.EnvBuilder(with_pip=True).create(folder / '.venv')
@@ -182,6 +221,8 @@ def main() -> int:
     parser.add_argument('--folder', type=Path, default=default_folder(), help='Where to install. Default: %(default)s')
     parser.add_argument('--wheel', type=Path, help='Install this local wheel instead of downloading one.')
     parser.add_argument('--base-url', help='Download the wheel from this address instead of the GitHub release.')
+    parser.add_argument('--stop-running', action='store_true',
+                        help='Stop a SpareDrive running from the install folder, instead of asking.')
     start = parser.add_mutually_exclusive_group()
     start.add_argument('--start', action='store_true', help='Start SpareDrive when the install finishes.')
     start.add_argument('--no-start', action='store_true', help='Do not ask to start SpareDrive or to set up internet access.')
@@ -202,10 +243,13 @@ def main() -> int:
         with tempfile.TemporaryDirectory(prefix='sparedrive-install-') as scratch:
             wheel = args.wheel.resolve() if args.wheel else download_wheel(args.base_url or release_url(), Path(scratch))
             check_checksum(wheel)
-            server = install(wheel, folder)
+            server = install(wheel, folder, args.stop_running)
         launchers = write_launchers(folder)
     except subprocess.CalledProcessError as error:
         fail(f'A step failed ({error.cmd[-1] if error.cmd else "command"}, exit code {error.returncode}). Read the messages above.')
+    except PermissionError as error:
+        fail(f'{error}. A program is still using files in {folder}. Close any SpareDrive window or other program '
+             'running from there, and try again.')
     except OSError as error:
         fail(str(error))
 
