@@ -259,6 +259,9 @@ pipeline {
                     # starts Python on itself.
                     rm -rf .install-test
                     uv run --no-project --python "$PYTHON_VERSION" python -x "$INSTALLER" --base-url "file://$PWD/dist" --folder .install-test --no-start
+
+                    # The installed folder must start from the settings the installer wrote, and create its household.
+                    $TOOLS smoke-install .install-test
                 '''
                 archiveArtifacts artifacts: 'dist/*', fingerprint: true
             }

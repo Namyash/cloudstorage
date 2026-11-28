@@ -9,6 +9,7 @@ Standard library only, and Python 3.11 or newer (tomllib). Run from the reposito
     python ci/release_tools.py set-version VERSION           write the version into the working copy
     python ci/release_tools.py verify-wheel WHEEL VERSION    the wheel holds everything the source tree packages
     python ci/release_tools.py smoke VERSION                 run in an environment with the wheel installed
+    python ci/release_tools.py smoke-install FOLDER          start an installed folder and check its household appears
     python ci/release_tools.py build-installer VERSION WHEEL OUT_DIR --repo OWNER/NAME
                                                              write the one-file Install-SpareDrive.cmd
     python ci/release_tools.py installer-files               the name of that file
@@ -27,9 +28,11 @@ import hashlib
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
+import time
 import tomllib
 import urllib.error
 import urllib.parse
@@ -166,6 +169,11 @@ def check_repo(root: Path) -> list[str]:
                       for name in INSTALLER_VALUES if len(re.findall(rf"(?m)^{name} = ''$", source)) != 1)
         if not source.isascii():
             errors.append(f'{INSTALLER_DIR}/{INSTALLER_SOURCE} must be plain ASCII so cmd.exe can read the .cmd built from it.')
+        for name in ('SYSTEM_FOLDER', 'PROGRAM_FOLDER', 'SETTINGS_FILE', 'DATA_FOLDER'):
+            try:
+                installer_constant(root, name)
+            except ValueError as error:
+                errors.append(str(error))
         if "\nif __name__ == '__main__':" not in source:
             errors.append(f'{INSTALLER_DIR}/{INSTALLER_SOURCE} must end with an `if __name__ == \'__main__\':` block.')
     setuptools = project['tool']['setuptools']
@@ -295,6 +303,61 @@ def build_installer(root: Path, version: str, wheel: Path, out_dir: Path, reposi
     return target
 
 
+def installer_constant(root: Path, name: str) -> str:
+    """A text value the installer defines, such as the name of its hidden folder, so it is only written once."""
+    source = (root / INSTALLER_DIR / INSTALLER_SOURCE).read_text(encoding='utf-8')
+    match = re.search(rf"(?m)^{name} = '([^']+)'(?:\s+#.*)?$", source)
+    if match is None:
+        raise ValueError(f"{INSTALLER_SOURCE} must define {name} = '...'.")
+    return match[1]
+
+
+def smoke_install(root: Path, folder: Path) -> None:
+    """Start the program an installer put in `folder`, from the settings it wrote, and check the household appears.
+
+    The technical parts are in one hidden folder. The settings name a folder but no household, so the first start
+    must create one there and remember it. On Windows the folder must really carry the hidden flag.
+    """
+    system = folder / installer_constant(root, 'SYSTEM_FOLDER')
+    settings_file = system / installer_constant(root, 'SETTINGS_FILE')
+    settings = json.loads(settings_file.read_text(encoding='utf-8'))
+    if os.name == 'nt':
+        import ctypes
+        if not ctypes.windll.kernel32.GetFileAttributesW(str(system)) & 0x2:
+            fail(f'{system.name} should be hidden in Explorer, but it is not.')
+    with socket.socket() as probe:
+        probe.bind(('127.0.0.1', 0))
+        port = probe.getsockname()[1]
+    settings['port'] = port  # A free port, so a busy default port on the build machine cannot fail the check.
+    settings_file.write_text(json.dumps(settings, indent=2), encoding='utf-8')
+    python = system / installer_constant(root, 'PROGRAM_FOLDER') / ('Scripts/python.exe' if os.name == 'nt' else 'bin/python')
+    data = Path(settings['data'])
+    state = None
+    with subprocess.Popen([str(python), '-m', 'family_drive', str(settings_file)], stdout=subprocess.DEVNULL,
+                          stderr=subprocess.DEVNULL) as server:
+        try:
+            for _ in range(40):
+                try:
+                    with urllib.request.urlopen(f'http://127.0.0.1:{port}/api/state', timeout=3) as response:
+                        state = json.loads(response.read())
+                    break
+                except OSError:
+                    time.sleep(0.5)
+        finally:
+            server.terminate()
+            server.wait(timeout=15)
+    if state is None:
+        fail('The installed program did not start from the settings the installer wrote.')
+    if state.get('setup') is not True:
+        fail(f'A new household should offer first-run setup, but the program answered {state}.')
+    marker = data / '.family-drive-id'
+    if not ((data / 'family-drive.sqlite3').is_file() and marker.is_file()):
+        fail(f'The first start did not create the household in {data}.')
+    if json.loads(settings_file.read_text(encoding='utf-8')).get('storageId') != marker.read_text(encoding='ascii'):
+        fail('The first start did not remember the household it created.')
+    print(f'[OK] the installed program started from {system.name}/{settings_file.name} and created its household in {system.name}/{data.name}/')
+
+
 def write_notes(root: Path, version: str, wheel: Path, out_dir: Path, commit: str, product: str, build_url: str,
                 extras: list[Path]) -> None:
     project = load_project(root)
@@ -310,11 +373,11 @@ def write_notes(root: Path, version: str, wheel: Path, out_dir: Path, commit: st
 Requires {python}.
 
 ## Easy install
-1. Download `{INSTALLER_ASSET}` from Assets. It is the only file you need.
-2. Double-click it. It downloads this release's wheel from GitHub, checks it against the checksum built into the installer, creates a private environment, installs {product}, and offers to set up internet access (the Tailscale link and an optional Vercel launch page) and to start it.
-3. Open [{product}](http://127.0.0.1:8765/), enter the setup code shown in the terminal, select a dedicated folder on your data drive, and create your admin account.
+1. Make a folder for SpareDrive, on your external drive if you like, and download `{INSTALLER_ASSET}` into it. It is the only file you need.
+2. Double-click it. It downloads this release's wheel from GitHub, checks it against the checksum built into the installer, and installs everything into that one folder: three shortcuts that you can see, and one hidden folder, `.sparedrive`, with the program, your settings and your household's files. It hides nothing else. It then offers to set up internet access (the Tailscale link and an optional Vercel launch page) and to start {product}.
+3. Open [{product}](http://127.0.0.1:8765/), enter the setup code shown in the terminal, and create your admin account.
 
-Run the installer of a newer release to upgrade; if SpareDrive is running it asks to stop it first. Your data and settings are never touched.
+Everything stays in that folder, so you can move it or back it up as a whole. To upgrade, run the `{INSTALLER_ASSET}` of a newer release; if SpareDrive is running it asks to stop it first. Your data and settings are never touched.
 
 ## Manual install
 Download `{wheel.name}`, open PowerShell in the download folder and run `python -m pip install .\\{wheel.name}`, then `python -m family_drive`.
@@ -389,11 +452,12 @@ def main() -> int:
     for name in ('check-repo', 'released-tag', 'next-version', 'installer-files'):
         commands.add_parser(name)
     for name, arguments in (('wheel-name', ['version']), ('set-version', ['version']), ('smoke', ['version']),
+                            ('smoke-install', ['folder']),
                             ('verify-wheel', ['wheel', 'version']), ('notes', ['version', 'wheel', 'out_dir']),
                             ('build-installer', ['version', 'wheel', 'out_dir'])):
         command = commands.add_parser(name)
         for argument in arguments:
-            command.add_argument(argument, type=Path if argument in ('wheel', 'out_dir') else str)
+            command.add_argument(argument, type=Path if argument in ('wheel', 'out_dir', 'folder') else str)
     commands.choices['build-installer'].add_argument('--repo', required=True)
     notes = commands.choices['notes']
     notes.add_argument('--commit', default='unknown')
@@ -432,6 +496,8 @@ def main() -> int:
             print(f'[OK] {args.wheel.name} holds every packaged file, the right metadata and the commands')
         elif args.command == 'smoke':
             smoke(root, args.version)
+        elif args.command == 'smoke-install':
+            smoke_install(root, args.folder)
         elif args.command == 'notes':
             write_notes(root, args.version, args.wheel, args.out_dir, args.commit, args.product, args.build_url, args.also)
         else:

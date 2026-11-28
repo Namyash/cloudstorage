@@ -20,16 +20,16 @@ if __package__:
     from .storage_migration import move_household
     from .account_and_file_api import MIN_FREE, STORAGE_ASSETS, WEB, create_app, server_options
     from .drive_discovery import (
-        drive_inventory, find_households, folder_choice, folder_contents, household_matches, physical_disks,
-        relocated_storage_folder, storage_folder,
+        drive_inventory, find_households, folder_choice, folder_contents, household_id, household_matches,
+        physical_disks, relocated_storage_folder, storage_folder,
     )
     from .remote_setup import read_json
 else:
     from storage_migration import move_household
     from account_and_file_api import MIN_FREE, STORAGE_ASSETS, WEB, create_app, server_options
     from drive_discovery import (
-        drive_inventory, find_households, folder_choice, folder_contents, household_matches, physical_disks,
-        relocated_storage_folder, storage_folder,
+        drive_inventory, find_households, folder_choice, folder_contents, household_id, household_matches,
+        physical_disks, relocated_storage_folder, storage_folder,
     )
     from remote_setup import read_json
 
@@ -81,8 +81,15 @@ def create_host(config, default_port=8765, set_temp=None):
                 return None
             saved = Path(settings['data'])
             path = saved
-            storage_id = identity = settings.get('storageId')
+            saved_id = settings.get('storageId')
             allow_system = settings.get('allowSystemDrive') is True
+            if not saved_id:
+                # Settings that name a folder but no household yet, as the installer writes them: reopen a household
+                # the folder already holds, or create one there on this first start.
+                saved_id = household_id(saved)
+                if not saved_id:
+                    return start_household_in(saved, allow_system)
+            storage_id = identity = saved_id
             if not household_matches(saved, storage_id):
                 mounted = None
                 # Keep the reason from the latest search while the next one waits.
@@ -109,7 +116,7 @@ def create_host(config, default_port=8765, set_temp=None):
                     updated = dict(settings, data=str(folder), storageId=identity)
                     app = open_drive(folder, updated)
                     set_drive_temp(folder)
-                    if folder != saved or identity != storage_id:
+                    if folder != saved or identity != settings.get('storageId'):
                         save_settings(updated)
                     settings, mounted, mount_error = updated, app, ''
                 except (UnicodeError, OSError, sqlite3.Error):
@@ -118,6 +125,24 @@ def create_host(config, default_port=8765, set_temp=None):
                 except ValueError as error:
                     report_mount_error(str(error))  # These messages tell the host owner what to fix.
             return mounted
+
+    def start_household_in(folder, allow_system):
+        """Create the household in a folder the settings name, then remember its identity. Called with the lock held."""
+        nonlocal settings, mounted, mount_error
+        try:
+            target = storage_folder(folder, allow_system)
+            updated = dict(settings, data=str(target))
+            app = open_drive(target, updated, require_empty_storage=True)
+            updated['storageId'] = (target / '.family-drive-id').read_text(encoding='ascii')
+            set_drive_temp(target)
+            save_settings(updated)
+            settings, mounted, mount_error = updated, app, ''
+        except (UnicodeError, OSError, sqlite3.Error):
+            report_mount_error('The storage folder is unavailable. Check the drive and folder permissions.',
+                               unexpected=True)
+        except ValueError as error:
+            report_mount_error(str(error))
+        return mounted
 
     def report_mount_error(message, unexpected=False):
         nonlocal mount_error
