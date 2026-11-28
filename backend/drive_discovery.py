@@ -220,10 +220,14 @@ def folder_contents(drive, relative, offset, allow_system=False):
         raise ValueError('Invalid folder page.')
     folder = joined_folder(drive, relative, allow_system)
     if (folder / '.family-drive-id').is_file():
-        return {'entries': [], 'managed': True, 'more': False}
+        return {'entries': [], 'managed': True, 'empty': False, 'more': False}
     with os.scandir(folder) as listing:
         entries = []
+        empty = True
         for entry in listing:
+            empty = False
+            if entry.name.casefold() in HOUSEKEEPING_FOLDERS:
+                continue
             try:
                 info = entry.stat(follow_symlinks=False)
             except OSError:
@@ -234,7 +238,7 @@ def folder_contents(drive, relative, offset, allow_system=False):
             entries.append({'name': entry.name, 'directory': directory,
                             'size': None if directory else info.st_size, 'modified': int(info.st_mtime)})
     entries.sort(key=lambda item: (not item['directory'], item['name'].casefold(), item['name']))
-    return {'entries': entries[offset:offset + 100], 'managed': False, 'more': len(entries) > offset + 100}
+    return {'entries': entries[offset:offset + 100], 'managed': False, 'empty': empty, 'more': len(entries) > offset + 100}
 
 
 def selected_folder(drive, relative, new_name, allow_system=False):

@@ -17,7 +17,7 @@ from waitress import create_server
 from werkzeug.exceptions import HTTPException
 
 if __package__:
-    from .storage_migration import move_household
+    from .storage_migration import destination_info, move_household
     from .account_and_file_api import MIN_FREE, STORAGE_ASSETS, WEB, create_app, server_options
     from .drive_discovery import (
         drive_inventory, find_households, folder_choice, folder_contents, household_id, household_matches,
@@ -25,7 +25,7 @@ if __package__:
     )
     from .remote_setup import read_json
 else:
-    from storage_migration import move_household
+    from storage_migration import destination_info, move_household
     from account_and_file_api import MIN_FREE, STORAGE_ASSETS, WEB, create_app, server_options
     from drive_discovery import (
         drive_inventory, find_households, folder_choice, folder_contents, household_id, household_matches,
@@ -100,13 +100,13 @@ def create_host(config, default_port=8765, set_temp=None):
                 next_relocation_check = stamp + 3
                 path = relocated_storage_folder(saved, storage_id, allow_system)
                 if path is None:
-                    # The saved household is not where it was. Reconnect to the household on any connected drive.
+                    # A move leaves a point-in-time backup. Only the configured identity can auto-reconnect.
                     found = find_households(drive_inventory(), allow_system)
-                    choices = [item for item in found if item[1] == storage_id] or found
+                    choices = [item for item in found if item[1] == storage_id]
                     if len(choices) > 1:
-                        mount_error = 'More than one SpareDrive household is connected. Use Storage explorer to choose the one to open.'
+                        mount_error = 'More than one copy matches this household. Browse to the correct folder in Storage explorer.'
                     elif not choices:
-                        mount_error = 'No SpareDrive household was found on the connected drives. Reconnect your drive or use Storage explorer to set up a new household.'
+                        mount_error = 'The active household was not found on the connected drives. Reconnect its drive or browse to its folder in Storage explorer.'
                     if len(choices) != 1:
                         return None
                     path, identity = choices[0]
@@ -173,6 +173,12 @@ def create_host(config, default_port=8765, set_temp=None):
             with lock:
                 move.update(phase=phase, copied=copied, total=total, files=files, fileCount=file_count)
 
+        def failed(message):
+            with lock:
+                if set_temp:
+                    set_temp(str(source / '.http-tmp'))
+                move.update(phase='failed', error=message)
+
         try:
             with writes:
                 writes.wait_for(lambda: writers == 0)
@@ -184,28 +190,23 @@ def create_host(config, default_port=8765, set_temp=None):
                 settings, mounted, mount_error = updated, app, ''
                 move.update(phase='done')
         except ValueError as error:
-            with lock:
-                move.update(phase='failed', error=str(error))
+            failed(str(error))
         except (OSError, UnicodeError, sqlite3.Error):
             portal.logger.exception('Storage move failed')
-            with lock:
-                if set_temp:
-                    set_temp(str(source / '.http-tmp'))
-                move.update(phase='failed', error='The move stopped. Check that both drives are connected and writable, then try a new destination folder.')
+            failed('The move stopped. Check that both drives are connected and writable, then try again. '
+                   'If the destination already contains a copy, choose a different empty folder.')
 
     def queue_move(values):
         nonlocal move
         with lock:
             if moving() or active_app() is None:
                 raise ValueError('The current storage folder is busy or unavailable.')
-            if not isinstance(values.get('newName'), str) or not values['newName'].strip():
-                raise ValueError('Enter the name of a new folder to receive the copy.')
             target = folder_choice(values)
             source = Path(settings['data'])
-            if target.exists() or target.is_relative_to(source) or source.is_relative_to(target):
-                raise ValueError('Choose a new folder outside the current SpareDrive folder.')
+            destination_info(source, target)
             updated = dict(settings, data=str(target), storageId=secrets.token_hex(16), allowSystemDrive=values.get('allowSystem') is True)
-            move = {'phase': 'waiting', 'target': str(target), 'copied': 0, 'total': 0, 'files': 0, 'fileCount': 0}
+            move = {'phase': 'waiting', 'source': str(source), 'target': str(target),
+                    'copied': 0, 'total': 0, 'files': 0, 'fileCount': 0}
             Thread(target=run_move, args=(source, settings['storageId'], target, updated), daemon=True, name='family-drive-storage-move').start()
             return dict(move)
 

@@ -41,6 +41,13 @@ body { min-width: 0; }
 .explorer-home { text-decoration: none; }
 .explorer-main { padding: 32px 0 56px; }
 .explorer-main .page-title { align-items: flex-end; }
+.explorer-main :is(#inventory, #choose, #move-progress, #move-result) { scroll-margin-top: 88px; }
+.storage-local-link {
+  width: fit-content;
+  max-width: 100%;
+  color: inherit;
+  text-underline-offset: 3px;
+}
 
 /* Status Hero Banner */
 .connection {
@@ -153,6 +160,20 @@ body { min-width: 0; }
   font-weight: 700;
   overflow-wrap: anywhere;
 }
+.volume-entry.selected-destination {
+  border-color: var(--emerald-border);
+  background: var(--emerald-soft);
+}
+.volume-location {
+  display: inline-block;
+  padding: 2px 7px;
+  margin-inline-start: 7px;
+  border-radius: 6px;
+  background: var(--surface);
+  color: var(--emerald);
+  font-size: 0.72rem;
+  font-weight: 700;
+}
 .volume-entry p {
   color: var(--muted);
   font-size: 0.8rem;
@@ -186,7 +207,46 @@ body { min-width: 0; }
 .unlock-panel { margin-bottom: 20px; }
 .system-option { margin-top: 14px; color: var(--muted); font-size: 0.86rem; }
 #move-progress { margin-bottom: 20px; }
-#move-progress progress { margin-top: 8px; }
+#move-progress progress { margin-top: 12px; }
+.move-paths {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 12px;
+  margin: 0 0 12px;
+}
+.move-paths div {
+  padding: 10px 12px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--surface);
+}
+.move-paths dt {
+  color: var(--muted);
+  font-size: 0.78rem;
+  font-weight: 700;
+}
+.move-paths dd {
+  margin: 4px 0 0;
+  font-family: var(--font-mono);
+  font-size: 0.84rem;
+  overflow-wrap: anywhere;
+}
+.destination-options {
+  display: flex;
+  flex: 1 0 100%;
+  flex-wrap: wrap;
+  gap: 4px 16px;
+  padding: 0;
+  margin: 0;
+  border: 0;
+}
+.destination-options legend {
+  margin-bottom: 6px;
+  color: var(--muted);
+  font-size: 0.8rem;
+}
+.explorer-form .destination-options label { flex: 0 1 auto; }
+.browse-actions { padding-top: 0; }
 
 .explorer-form {
   display: flex;
@@ -278,4 +338,5 @@ body { min-width: 0; }
   .explorer-main .page-title { align-items: flex-start; flex-wrap: wrap; }
   .explorer-grid { grid-template-columns: 1fr; }
   .browse-head { flex-wrap: wrap; }
+  .move-paths { grid-template-columns: 1fr; }
 }

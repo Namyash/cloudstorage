@@ -28,7 +28,7 @@
       <div>
         <span class="eyebrow-pill">Local Windows Topology</span>
         <h1>Storage explorer</h1>
-        <p>Inspect attached Windows drives, verify hardware readiness, and manage your household storage folder.</p>
+        <p>See connected drives, choose where SpareDrive stores your files, or move the whole household to another drive.</p>
       </div>
       <div class="page-actions">
         <button class="button secondary" id="refresh" type="button">
@@ -36,12 +36,17 @@
           <span>Refresh drives</span>
         </button>
         <button class="button secondary" id="new-household" type="button" hidden>Set up a new household</button>
-        <button class="button primary" id="move-open" type="button" hidden>Change storage location</button>
+        <button class="button primary" id="move-open" type="button" hidden>Move storage</button>
       </div>
     </div>
 
     <section class="connection" id="connection" role="status">Checking for drives…</section>
     <section class="connection" id="move-result" role="status" hidden></section>
+    <section class="connection" id="move-local" hidden>
+      <strong>Move storage from the host computer</strong>
+      <p>On the computer running SpareDrive, open Storage explorer and sign in as the administrator.</p>
+      <a class="storage-local-link" id="move-local-link"></a>
+    </section>
     <section class="panel discovery-panel" id="move-progress" hidden>
       <div class="panel-title-row">
         <span class="panel-glyph"><svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 3v12m0 0-4-4m4 4 4-4"/><path d="M4 17v2a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-2"/></svg></span>
@@ -50,6 +55,10 @@
           <p id="move-detail"></p>
         </div>
       </div>
+      <dl class="move-paths">
+        <div><dt>From</dt><dd id="move-progress-source"></dd></div>
+        <div><dt>To</dt><dd id="move-progress-target"></dd></div>
+      </dl>
       <progress id="move-meter" max="100" aria-label="Storage move progress"></progress>
     </section>
 
@@ -101,7 +110,10 @@
           <h2>Browse drive</h2>
           <p id="browse-path"></p>
         </div>
-        <button class="button secondary" id="parent" type="button">Up one level</button>
+        <div class="page-actions browse-actions">
+          <button class="button secondary" id="parent" type="button">Up one level</button>
+          <button class="button primary" id="browse-move" type="button" hidden>Move storage here</button>
+        </div>
       </div>
       <p class="browse-message" id="browse-message" hidden></p>
       <div class="table-scroll" id="entries-table">
@@ -125,8 +137,17 @@
       <div class="folder-choice" id="choose" hidden>
         <h2 id="choice-title">Choose storage folder</h2>
         <p id="choice-help"></p>
+        <dl class="move-paths" id="move-paths" hidden>
+          <div><dt>From</dt><dd id="move-source"></dd></div>
+          <div><dt>To</dt><dd id="move-target"></dd></div>
+        </dl>
         <form id="select-new" class="explorer-form">
-          <label>New folder name<input name="folder" maxlength="100" value="SpareDriveData" required></label>
+          <fieldset class="destination-options" id="move-options" hidden>
+            <legend>Destination folder</legend>
+            <label class="checkbox"><input type="radio" name="destination" id="move-create" value="create" checked> Create a new folder here</label>
+            <label class="checkbox"><input type="radio" name="destination" id="move-existing" value="existing"> Use this empty folder</label>
+          </fieldset>
+          <label id="folder-label">New folder name<input id="folder-name" name="folder" maxlength="100" value="SpareDriveData" required></label>
           <label id="move-password" hidden>Admin sign-in password<input name="password" type="password" autocomplete="current-password"></label>
           <button id="select-submit" class="button primary" type="submit">Create and use folder</button>
         </form>

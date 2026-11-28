@@ -13,6 +13,7 @@ from werkzeug.wrappers import Response
 
 from backend import drive_discovery
 from backend import host_server as host
+from backend.storage_migration import move_household
 
 
 ORIGIN = 'http://127.0.0.1:8765'
@@ -180,7 +181,8 @@ class StorageMoveTest(unittest.TestCase):
 
         self.move(expected=400, password='wrong-password')
         self.assertFalse(self.destination.exists())
-        self.move()
+        self.destination.mkdir()
+        self.send('POST', 'storage/move', 202, path=self.destination.name, password=PASSWORD)
         state = self.wait_move()
         self.assertEqual(state['move']['phase'], 'done', state['move'])
         self.assertEqual(state['selected'], str(self.destination))
@@ -190,6 +192,84 @@ class StorageMoveTest(unittest.TestCase):
         self.assertEqual((self.destination / 'objects' / file_id).read_bytes(), payload)
         self.assertEqual((self.original / '.family-drive-id').read_text(), self.initial_config['storageId'])
         self.assertNotEqual((self.destination / '.family-drive-id').read_text(), self.initial_config['storageId'])
+
+    def test_storage_move_rejects_nonempty_destination(self):
+        self.destination.mkdir()
+        existing = self.destination / 'unrelated.txt'
+        existing.write_bytes(b'Keep this file')
+
+        self.send('POST', 'storage/move', 400, path=self.destination.name, password=PASSWORD)
+
+        self.assertEqual(list(self.destination.iterdir()), [existing])
+        self.assertEqual(existing.read_bytes(), b'Keep this file')
+        self.assertEqual(self.send('GET', 'storage/state').json['selected'], str(self.original))
+        self.assertEqual(json.loads(self.config.read_text(encoding='utf-8')), self.initial_config)
+
+    def test_disconnected_destination_never_switches_back_to_stale_backup(self):
+        self.move()
+        result = self.wait_move()
+        self.assertEqual(result['move']['phase'], 'done', result['move'])
+        current = json.loads(self.config.read_text(encoding='utf-8'))
+        self.send('PATCH', 'family', quota=1_000_000)
+        file_id = secrets.token_hex(16)
+        payload = b'Uploaded after the move'
+        self.send('POST', 'uploads', 201, id=file_id, space='family', size=len(payload), label='After the move')
+        self.send('PUT', f'uploads/{file_id}/0', payload=payload)
+        new_location = self.root / 'reconnected'
+        self.destination.rename(new_location)
+        backup = (self.original, self.initial_config['storageId'])
+
+        with (
+            patch.object(host, 'relocated_storage_folder', return_value=None),
+            patch.object(host, 'find_households', return_value=[backup]) as discover,
+            patch.object(host, 'monotonic', return_value=1_000) as clock,
+        ):
+            self.send('GET', 'state', 503)
+            self.assertEqual(self.send('GET', 'storage/state').json['selected'], str(self.destination))
+            self.assertEqual(json.loads(self.config.read_text(encoding='utf-8')), current)
+
+            discover.return_value = [backup, (new_location, current['storageId'])]
+            clock.return_value += 10
+            self.assertEqual(self.send('GET', 'files/' + file_id + '/blob').data, payload)
+
+        self.assertEqual(json.loads(self.config.read_text(encoding='utf-8')), dict(current, data=str(new_location)))
+        self.assertFalse((self.original / 'objects' / file_id).exists())
+
+    def test_remote_admin_gets_local_storage_link_without_remote_move_access(self):
+        remote = 'https://sparedrive.example.net'
+        config = dict(self.initial_config, httpsUrl=remote)
+        self.config.write_text(json.dumps(config), encoding='utf-8')
+        service, _, _ = host.create_host(self.config)
+        client = Client(service, Response)
+        self.assertEqual(client.get('/api/storage/state', base_url=remote).status_code, 401)
+        sign_in = client.post('/api/login', base_url=remote, json={'username': 'admin', 'password': PASSWORD},
+                              headers={'X-Family-Drive': '1'})
+        self.assertEqual(sign_in.status_code, 200, sign_in.get_json())
+
+        state = client.get('/api/storage/state', base_url=remote)
+        self.assertEqual(state.status_code, 200)
+        self.assertFalse(state.json['canMove'])
+        self.assertEqual(state.json['localStorageUrl'], ORIGIN + '/storage')
+        denied = client.post('/api/storage/move', base_url=remote, json={'newName': self.destination.name, 'password': PASSWORD},
+                             headers={'X-Family-Drive': '1'})
+        self.assertEqual(denied.status_code, 403)
+        self.assertFalse(self.destination.exists())
+
+    def test_destination_that_receives_other_data_while_copying_is_left_intact(self):
+        self.destination.mkdir()
+        unrelated = self.destination / 'keep.txt'
+
+        def write_into_destination(phase, *_progress):
+            if phase == 'verifying':
+                unrelated.write_bytes(b'Keep this file.')
+
+        with self.assertRaisesRegex(ValueError, 'new or empty destination'):
+            move_household(self.original, self.destination, self.initial_config['storageId'],
+                           secrets.token_hex(16), 0, write_into_destination)
+
+        self.assertEqual(list(self.destination.iterdir()), [unrelated])
+        self.assertEqual(unrelated.read_bytes(), b'Keep this file.')
+        self.assertEqual(json.loads(self.config.read_text(encoding='utf-8')), self.initial_config)
 
     def test_pending_upload_leaves_old_storage_active(self):
         self.send('PATCH', 'family', quota=1_000_000)

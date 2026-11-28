@@ -426,6 +426,7 @@ def create_app(root, port=8765, public_url=None, expected_storage_id=None, setup
         require_user(admin=True)
         return jsonify(mode='active', selected=str(root), volumes=drive_inventory(), disks=physical_disks(), unlocked=True,
                        canMove=storage_move is not None and g.origin == loopback,
+                       localStorageUrl=f'{loopback}/storage' if storage_move is not None else None,
                        move=storage_status() if storage_status and g.origin == loopback else None)
 
     @app.get('/api/storage/folders')

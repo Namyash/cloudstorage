@@ -7,16 +7,52 @@ from pathlib import Path
 import re
 import shutil
 import sqlite3
+import stat
 from tempfile import TemporaryDirectory
 
 
 COPY_BLOCK = 4 * 1024 * 1024
 
 
+def destination_info(source, target, *, stage=None):
+    """Validate a dedicated new or empty destination and record its identity if present."""
+    if target.is_relative_to(source) or source.is_relative_to(target):
+        raise ValueError('Choose a destination outside the current SpareDrive folder.')
+    try:
+        info = target.lstat()
+    except FileNotFoundError:
+        return None
+    if (not stat.S_ISDIR(info.st_mode)
+            or getattr(info, 'st_file_attributes', 0) & stat.FILE_ATTRIBUTE_REPARSE_POINT
+            or any(item != stage for item in target.iterdir())):
+        raise ValueError('Choose a new or empty destination folder. Existing data is never overwritten.')
+    return info
+
+
+def publish_copy(staging, target, previous):
+    if previous is None:
+        staging.rename(target)
+        return
+    # Keep the selected folder and its permissions. The marker is published last so
+    # a partially published copy is never discovered as a household.
+    published = []
+    try:
+        for name in ('objects', 'family-drive.sqlite3', '.family-drive-id'):
+            item = target / name
+            (staging / name).rename(item)
+            published.append(item)
+    except OSError:
+        for item in reversed(published):
+            try:
+                item.rename(staging / item.name)
+            except OSError:
+                pass  # A disconnected drive can leave an incomplete, unmarked folder.
+        raise
+
+
 def move_household(source, target, storage_id, new_storage_id, reserve, report):
     source, target = Path(source), Path(target)
-    if target.exists() or target.is_relative_to(source) or source.is_relative_to(target):
-        raise ValueError('Choose a new folder outside the current SpareDrive folder.')
+    previous = destination_info(source, target)
     marker = source / '.family-drive-id'
     if marker.read_text(encoding='ascii') != storage_id:
         raise ValueError('The original drive is unavailable.')
@@ -31,13 +67,20 @@ def move_household(source, target, storage_id, new_storage_id, reserve, report):
         allocated += int(original.execute("SELECT value FROM config WHERE key = 'family_quota'").fetchone()[0])
         database_size = original.execute('PRAGMA page_count').fetchone()[0] * original.execute('PRAGMA page_size').fetchone()[0]
         total = sum(size for _, size in files)
-        if shutil.disk_usage(target.parent).free < max(total, allocated) + database_size + reserve:
-            raise ValueError('The destination needs enough free space for current files and assigned quotas.')
+        required = max(total, allocated) + database_size + reserve
+        stage_parent = target if previous is not None else target.parent
+        free = shutil.disk_usage(stage_parent).free
+        if free < required:
+            raise ValueError(f'The destination has {free / 1e9:.2f} GB free. This household needs '
+                             f'{required / 1e9:.2f} GB for its files, assigned quotas, and disk reserve. '
+                             'Choose a larger drive or reduce unused quotas and try again.')
         report('copying', 0, total, 0, len(files))
 
-        # Stage on the destination volume so the final folder rename is atomic.
-        with TemporaryDirectory(dir=target.parent, prefix='.family-drive-move-') as stage:
-            staging = Path(stage) / 'data'
+        # Existing folders keep their permissions, including on the staged files.
+        # For a new folder, stage beside it for an atomic final rename.
+        with TemporaryDirectory(dir=stage_parent, prefix='.family-drive-move-') as stage:
+            stage_path = Path(stage)
+            staging = stage_path / 'data'
             staging.mkdir()
             objects = staging / 'objects'
             objects.mkdir()
@@ -78,4 +121,8 @@ def move_household(source, target, storage_id, new_storage_id, reserve, report):
                 identity.write(new_storage_id)
                 identity.flush()
                 os.fsync(identity.fileno())
-            staging.rename(target)
+            current = destination_info(source, target, stage=stage_path if previous is not None else None)
+            if (previous is None) != (current is None) or (
+                    previous is not None and current is not None and not os.path.samestat(previous, current)):
+                raise ValueError('The destination folder changed during the move. Choose it again and retry.')
+            publish_copy(staging, target, previous)
